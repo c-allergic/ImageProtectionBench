@@ -1,0 +1,116 @@
+# ImageProtectionBench Configuration Example
+# This file shows how to configure the benchmark for evaluation
+
+# Output configuration
+output:
+  base_dir: "./outputs"
+  experiment_name: "example_experiment"
+
+# Dataset configuration
+dataset:
+  name: "coco"  # Options: coco, laion, celeb
+  path: null    # If null, will try to download/use default paths
+  subset: "val"
+  max_samples: 50
+  batch_size: 1
+  num_workers: 4
+
+# Device configuration
+device: "auto"  # Options: auto, cuda, cpu
+
+# Protection methods to evaluate
+protection_methods:
+  photoguard:
+    enabled: true
+    params:
+      model_path: null
+      epsilon: 0.03
+      steps: 10
+      
+  editshield:
+    enabled: true
+    params:
+      model_path: null
+      protection_strength: 0.5
+      
+  mist:
+    enabled: true
+    params:
+      model_path: null
+      noise_std: 0.1
+      
+  i2vguard:
+    enabled: true
+    params:
+      model_path: null
+      protection_level: "medium"
+
+# I2V models to test against
+i2v_models:
+  svd:
+    enabled: true
+    params:
+      model_path: null
+      num_frames: 14
+      height: 576
+      width: 1024
+      
+  ltx:
+    enabled: true
+    params:
+      model_path: null
+      num_frames: 24
+      
+  wan:
+    enabled: false  # Disable if not needed
+    params:
+      model_path: null
+      
+  skyreel:
+    enabled: true
+    params:
+      model_path: null
+      num_frames: 16
+
+# Attack configurations (for attacked_benchmark.py)
+attacks:
+  gaussian_noise:
+    enabled: true
+    std: 0.1
+    
+  jpeg_compression:
+    enabled: true
+    quality: 75
+    
+  rotation:
+    enabled: true
+    angle: 15.0
+    
+  crop:
+    enabled: true
+    ratio: 0.8
+    
+  scaling:
+    enabled: true
+    factor: 0.8
+
+# Evaluation configuration
+evaluation:
+  max_samples: 50  # Maximum samples to evaluate per method
+  save_samples: 5  # Number of sample images to save for visualization
+  
+# Metrics configuration
+metrics:
+  image_quality:
+    - psnr
+    - ssim
+    - lpips
+    
+  video_quality:
+    - vbench
+    - fvd
+    - temporal_consistency
+    
+  effectiveness:
+    - clip_score
+    - attack_success_rate 
