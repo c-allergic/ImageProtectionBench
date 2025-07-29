@@ -9,7 +9,8 @@ import numpy as np
 from PIL import Image
 from typing import Dict, Union, Any
 from .base import BaseAttack
-
+from data import pt_to_pil
+from torchvision import transforms
 
 class GaussianNoiseAttack(BaseAttack):
     """
@@ -36,27 +37,22 @@ class GaussianNoiseAttack(BaseAttack):
         self.mean = mean
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                std: float = None,
                mean: float = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply Gaussian noise to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             std: Noise standard deviation (overrides default)
             mean: Noise mean (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Noisy image in same format as input
+            Noisy image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to tensor
-        tensor = self._process_input(image)
-        
         # Use provided parameters or defaults
         noise_std = std if std is not None else self.std
         noise_mean = mean if mean is not None else self.mean
@@ -65,31 +61,38 @@ class GaussianNoiseAttack(BaseAttack):
         noise = torch.normal(
             mean=noise_mean,
             std=noise_std,
-            size=tensor.shape,
+            size=image.shape,
             device=self.device
         )
         
         # Add noise to image
-        noisy_tensor = tensor + noise
+        noisy_tensor = image + noise
         
-        # Convert back to original format
-        return self._process_output(noisy_tensor, original_format)
+        # Clamp to valid range
+        return torch.clamp(noisy_tensor, 0, 1)
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
+    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
+        """Get valid parameter ranges"""
         return {
-            "name": "Gaussian Noise",
-            "type": "Noise",
-            "description": "Adds Gaussian noise to test robustness",
-            "parameters": {
-                "std": self.std,
-                "mean": self.mean
-            },
-            "parameter_ranges": {
-                "std": {"min": 0.0, "max": 1.0, "default": 0.1},
-                "mean": {"min": -1.0, "max": 1.0, "default": 0.0}
-            }
+            "std": {"min": 0.0, "max": 1.0, "default": 0.1},
+            "mean": {"min": -1.0, "max": 1.0, "default": 0.0}
         }
+    
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Gaussian Noise",
+    #         "type": "Noise",
+    #         "description": "Adds Gaussian noise to test robustness",
+    #         "parameters": {
+    #             "std": self.std,
+    #             "mean": self.mean
+    #         },
+    #         "parameter_ranges": {
+    #             "std": {"min": 0.0, "max": 1.0, "default": 0.1},
+    #             "mean": {"min": -1.0, "max": 1.0, "default": 0.0}
+    #         }
+    #     }
 
 
 class SaltPepperAttack(BaseAttack):
@@ -116,59 +119,60 @@ class SaltPepperAttack(BaseAttack):
         self.salt_prob = salt_prob
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                prob: float = None,
                salt_prob: float = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply salt and pepper noise to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             prob: Noise probability (overrides default)
             salt_prob: Salt vs pepper probability (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Noisy image in same format as input
+            Noisy image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to tensor
-        tensor = self._process_input(image)
-        
         # Use provided parameters or defaults
         noise_prob = prob if prob is not None else self.prob
         s_prob = salt_prob if salt_prob is not None else self.salt_prob
         
         # Generate random mask for noise locations
-        noise_mask = torch.rand(tensor.shape, device=self.device) < noise_prob
+        noise_mask = torch.rand(image.shape, device=self.device) < noise_prob
         
         # Generate salt/pepper decisions
-        salt_mask = torch.rand(tensor.shape, device=self.device) < s_prob
+        salt_mask = torch.rand(image.shape, device=self.device) < s_prob
         
         # Apply noise
-        noisy_tensor = tensor.clone()
+        noisy_tensor = image.clone()
         # Salt (white) noise
         noisy_tensor[noise_mask & salt_mask] = 1.0
         # Pepper (black) noise  
         noisy_tensor[noise_mask & ~salt_mask] = 0.0
         
-        # Convert back to original format
-        return self._process_output(noisy_tensor, original_format)
+        return noisy_tensor
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
+    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
+        """Get valid parameter ranges"""
         return {
-            "name": "Salt and Pepper Noise",
-            "type": "Noise",
-            "description": "Adds impulse noise (salt and pepper)",
-            "parameters": {
-                "prob": self.prob,
-                "salt_prob": self.salt_prob
-            },
-            "parameter_ranges": {
-                "prob": {"min": 0.0, "max": 1.0, "default": 0.05},
-                "salt_prob": {"min": 0.0, "max": 1.0, "default": 0.5}
-            }
-        } 
+            "prob": {"min": 0.0, "max": 1.0, "default": 0.05},
+            "salt_prob": {"min": 0.0, "max": 1.0, "default": 0.5}
+        }
+    
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Salt and Pepper Noise",
+    #         "type": "Noise",
+    #         "description": "Adds impulse noise (salt and pepper)",
+    #         "parameters": {
+    #             "prob": self.prob,
+    #             "salt_prob": self.salt_prob
+    #         },
+    #         "parameter_ranges": {
+    #             "prob": {"min": 0.0, "max": 1.0, "default": 0.05},
+    #             "salt_prob": {"min": 0.0, "max": 1.0, "default": 0.5}
+    #         }
+    #     } 

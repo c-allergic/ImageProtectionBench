@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, List, Tuple
 import numpy as np
-from .base import AdversarialProtection
+from .base import ProtectionBase
 
 
-class I2VGuard(AdversarialProtection):
+class I2VGuard(ProtectionBase):
     """
     I2VGuard: 专门针对图像到视频模型的保护算法
     结合时序一致性和运动模式干扰
@@ -14,35 +14,36 @@ class I2VGuard(AdversarialProtection):
     
     def __init__(
         self,
-        i2v_model: nn.Module,
+        i2v_model: Optional[nn.Module] = None,
         motion_predictor: Optional[nn.Module] = None,
         epsilon: float = 0.03,
         num_steps: int = 50,
         temporal_weight: float = 0.5,
         motion_weight: float = 0.3,
         consistency_weight: float = 0.2,
+        step_size: float = 0.001,
         **kwargs
     ):
         """
         Args:
-            i2v_model: 图像到视频模型
+            i2v_model: 图像到视频模型（可选）
             motion_predictor: 运动预测器
             epsilon: 扰动预算
             num_steps: 优化步数
             temporal_weight: 时序权重
             motion_weight: 运动权重
             consistency_weight: 一致性权重
+            step_size: 优化步长
         """
+        self.i2v_model = i2v_model
         self.motion_predictor = motion_predictor
+        self.epsilon = epsilon
+        self.num_steps = num_steps
+        self.step_size = step_size
         self.temporal_weight = temporal_weight
         self.motion_weight = motion_weight
         self.consistency_weight = consistency_weight
-        super().__init__(
-            target_model=i2v_model,
-            epsilon=epsilon,
-            num_steps=num_steps,
-            **kwargs
-        )
+        super().__init__(**kwargs)
     
     def _setup_model(self):
         """设置模型"""
@@ -58,27 +59,31 @@ class I2VGuard(AdversarialProtection):
     
     def protect(
         self,
-        images: torch.Tensor,
+        image: torch.Tensor,
         num_frames: int = 16,
         **kwargs
     ) -> torch.Tensor:
         """
-        使用I2VGuard保护图像
+        使用I2VGuard保护单张图像
         
         Args:
-            images: 输入图像张量 [B, C, H, W]
+            image: 输入图像张量 [C, H, W]
             num_frames: 生成视频的帧数
             **kwargs: 其他参数
             
         Returns:
-            受保护的图像张量
+            受保护的图像张量 [C, H, W]
         """
-        images = images.to(self.device)
+        image = image.to(self.device)
+        
+        # 添加批次维度
+        images = image.unsqueeze(0)  # [1, C, H, W]
         
         # 应用I2V特定保护
         protected_images = self._apply_i2v_protection(images, num_frames)
         
-        return protected_images
+        # 移除批次维度
+        return protected_images.squeeze(0)
     
     def _apply_i2v_protection(
         self,

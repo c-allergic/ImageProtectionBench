@@ -45,8 +45,8 @@ class BaseAttack(ABC):
         
     @abstractmethod
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               image: torch.Tensor,
+               **kwargs) -> torch.Tensor:
         """
         Apply attack to input image
         
@@ -59,114 +59,38 @@ class BaseAttack(ABC):
         """
         pass
     
-    @abstractmethod
-    def get_attack_info(self) -> Dict[str, Any]:
+    def attack_multiple(
+        self, 
+        images: Union[torch.Tensor, List[torch.Tensor]], 
+        **kwargs
+    ) -> torch.Tensor:
         """
-        Get information about the attack method
-        
-        Returns:
-            Dictionary containing attack information
-        """
-        pass
-    
-    def _process_input(self, 
-                      image: Union[Image.Image, torch.Tensor, np.ndarray]) -> torch.Tensor:
-        """
-        Convert input image to tensor format
+        对多张图片进行攻击
         
         Args:
-            image: Input image
-            
+            images: 图片张量 [B, C, H, W] 或图片张量列表
+            **kwargs: 传递给attack方法的其他参数    
         Returns:
-            Image as tensor [C, H, W] with values in [0, 1]
+            被攻击的图片张量 [B, C, H, W]
         """
-        if isinstance(image, Image.Image):
-            # PIL Image to tensor
-            tensor = self.to_tensor(image)
-        elif isinstance(image, np.ndarray):
-            # Numpy array to tensor
-            if image.dtype == np.uint8:
-                image = image.astype(np.float32) / 255.0
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                # HWC to CHW
-                tensor = torch.from_numpy(image.transpose(2, 0, 1))
-            else:
-                tensor = torch.from_numpy(image)
-        elif isinstance(image, torch.Tensor):
-            tensor = image.clone()
-        else:
-            raise ValueError(f"Unsupported image type: {type(image)}")
+        # 处理输入格式
+        if isinstance(images, list):
+            images = torch.stack(images)
         
-        # Ensure tensor is in [0, 1] range
-        if tensor.max() > 1.0:
-            tensor = tensor / 255.0
-            
-        return tensor.to(self.device)
-    
-    def _process_output(self,
-                       tensor: torch.Tensor,
-                       original_format: type) -> Union[Image.Image, torch.Tensor, np.ndarray]:
-        """
-        Convert tensor back to original format
+        if len(images.shape) == 3:
+            # 单张图片，添加批次维度
+            images = images.unsqueeze(0)
         
-        Args:
-            tensor: Output tensor [C, H, W] with values in [0, 1]
-            original_format: Type of original input
-            
-        Returns:
-            Image in original format
-        """
-        # Clamp values to [0, 1]
-        tensor = torch.clamp(tensor, 0, 1)
-        
-        if original_format == Image.Image:
-            # Convert to PIL Image
-            return self.to_pil(tensor.cpu())
-        elif original_format == np.ndarray:
-            # Convert to numpy array
-            if len(tensor.shape) == 3:
-                # CHW to HWC
-                array = tensor.cpu().numpy().transpose(1, 2, 0)
-            else:
-                array = tensor.cpu().numpy()
-            return (array * 255).astype(np.uint8)
-        else:
-            # Return as tensor
-            return tensor
-    
-    def batch_attack(self,
-                    images: List[Union[Image.Image, torch.Tensor, np.ndarray]],
-                    **kwargs) -> List[Union[Image.Image, torch.Tensor, np.ndarray]]:
-        """
-        Apply attack to a batch of images
-        
-        Args:
-            images: List of input images
-            **kwargs: Attack-specific parameters
-            
-        Returns:
-            List of attacked images
-        """
+        images = images.to(self.device)
         attacked_images = []
-        for image in images:
-            attacked_image = self.attack(image, **kwargs)
-            attacked_images.append(attacked_image)
-        return attacked_images
-    
-    def validate_parameters(self, **kwargs) -> Dict[str, Any]:
-        """
-        Validate and process attack parameters
+        total_images = images.size(0)
         
-        Args:
-            **kwargs: Attack parameters to validate
-            
-        Returns:
-            Validated parameters dictionary
-        """
-        # Default implementation - subclasses should override
-        validated_params = self.params.copy()
-        validated_params.update(kwargs)
-        return validated_params
+        for i in range(total_images):
+            single_image = images[i]
+            attacked_single = self.attack(single_image, **kwargs)
+            attacked_images.append(attacked_single)
+        
+        return torch.stack(attacked_images)
     
     def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -174,15 +98,7 @@ class BaseAttack(ABC):
         
         Returns:
             Dictionary mapping parameter names to their valid ranges
+        这个函数应该在攻击开始前调用，用于验证参数是否在有效范围内，protection应该也加上这个函数，需要保证protection的参数在论文所给的有效性之内。
         """
         # Default implementation - subclasses should override
         return {}
-    
-    def __str__(self) -> str:
-        """String representation of the attack"""
-        info = self.get_attack_info()
-        return f"{info['name']} (Type: {info['type']})"
-    
-    def __repr__(self) -> str:
-        """Detailed string representation"""
-        return f"{self.__class__.__name__}(device='{self.device}', params={self.params})" 

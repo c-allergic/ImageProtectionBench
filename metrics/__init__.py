@@ -1,24 +1,36 @@
 """
-Evaluation Metrics Module for ImageProtectionBench
+Metrics Module for ImageProtectionBench
 
-This module contains various metrics for evaluating image/video quality
-and attack effectiveness in the context of image protection benchmarking.
+This module provides various metrics for evaluating image protection methods:
+- Image quality metrics (PSNR, SSIM, LPIPS)
+- Video quality metrics (VBench, FVD, Temporal Consistency)
+- Attack effectiveness metrics (CLIP Score, Attack Success Rate)
+- Timing metrics (TimeMetric, BatchTimingMetric, timeit decorator)
 """
 
+from .base import BaseMetric, ImageQualityMetric, VideoQualityMetric, EffectivenessMetric, TimeMetric
 from .image_quality import PSNRMetric, SSIMMetric, LPIPSMetric
-from .video_quality import VBenchMetric, FVDMetric, TemporalConsistencyMetric
-from .attack_effectiveness import CLIPScoreMetric, AttackSuccessRateMetric
+from .video_quality import VBenchMetric # , FVDMetric, TemporalConsistencyMetric
+from .attack_effectiveness import CLIPScoreMetric # , AttackSuccessRateMetric, ProtectionRobustnessMetric
+
 
 __all__ = [
+    # Base classes
+    'BaseMetric',
+    'ImageQualityMetric',
+    'VideoQualityMetric', 
+    'EffectivenessMetric',
+    'TimeMetric',
     # Image quality metrics
     'PSNRMetric',
     'SSIMMetric', 
     'LPIPSMetric',
     # Video quality metrics
     'VBenchMetric',
-    'FVDMetric',
-    'TemporalConsistencyMetric',
+    # 'FVDMetric',
+    # 'TemporalConsistencyMetric',
     # Attack effectiveness metrics
     'CLIPScoreMetric',
-    'AttackSuccessRateMetric'
+    # 'AttackSuccessRateMetric',
+    # 'ProtectionRobustnessMetric',
 ] 

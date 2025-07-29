@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, List
 import numpy as np
-from .base import FeatureDistortionProtection
+from .base import ProtectionBase
 
 
-class EditShield(FeatureDistortionProtection):
+class EditShield(ProtectionBase):
     """
     EditShield: 针对图像编辑的保护方法
     基于论文: "EditShield: Protecting Unauthorized Image Editing by Instruction-guided Diffusion Models"
@@ -14,7 +14,7 @@ class EditShield(FeatureDistortionProtection):
     
     def __init__(
         self,
-        feature_extractor: nn.Module,
+        feature_extractor: Optional[nn.Module] = None,
         edit_detector: Optional[nn.Module] = None,
         protection_strength: float = 0.05,
         semantic_threshold: float = 0.8,
@@ -23,20 +23,18 @@ class EditShield(FeatureDistortionProtection):
     ):
         """
         Args:
-            feature_extractor: 特征提取器（如CLIP）
+            feature_extractor: 特征提取器（如CLIP，可选）
             edit_detector: 编辑检测器
             protection_strength: 保护强度
             semantic_threshold: 语义相似性阈值
             frequency_weight: 频域权重
         """
+        self.feature_extractor = feature_extractor
         self.edit_detector = edit_detector
+        self.protection_strength = protection_strength
         self.semantic_threshold = semantic_threshold
         self.frequency_weight = frequency_weight
-        super().__init__(
-            feature_extractor=feature_extractor,
-            distortion_strength=protection_strength,
-            **kwargs
-        )
+        super().__init__(**kwargs)
     
     def _setup_model(self):
         """设置模型"""
@@ -46,36 +44,57 @@ class EditShield(FeatureDistortionProtection):
         # 创建语义保持网络
         self.semantic_preserving = SemanticPreservingNet().to(self.device)
     
+    def _extract_features(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        提取图像特征
+        
+        Args:
+            images: 输入图像张量
+            
+        Returns:
+            特征张量
+        """
+        if self.feature_extractor is not None:
+            return self.feature_extractor(images)
+        else:
+            # 简化的特征提取：使用平均池化
+            return F.adaptive_avg_pool2d(images, (1, 1)).flatten(1)
+    
     def protect(
         self,
-        images: torch.Tensor,
-        edit_instructions: Optional[List[str]] = None,
+        image: torch.Tensor,
+        edit_instructions: Optional[str] = None,
         **kwargs
     ) -> torch.Tensor:
         """
-        使用EditShield保护图像
+        使用EditShield保护单张图像
         
         Args:
-            images: 输入图像张量 [B, C, H, W]
-            edit_instructions: 编辑指令列表
+            image: 输入图像张量 [C, H, W]
+            edit_instructions: 编辑指令（可选）
             **kwargs: 其他参数
             
         Returns:
-            受保护的图像张量
+            受保护的图像张量 [C, H, W]
         """
-        images = images.to(self.device)
+        image = image.to(self.device)
+        
+        # 添加批次维度进行处理
+        images = image.unsqueeze(0)  # [1, C, H, W]
         
         # 提取原始特征
         original_features = self._extract_features(images)
         
         # 应用多层保护
+        edit_instructions_list = [edit_instructions] if edit_instructions else None
         protected_images = self._apply_multi_layer_protection(
             images, 
             original_features,
-            edit_instructions
+            edit_instructions_list
         )
         
-        return protected_images
+        # 移除批次维度
+        return protected_images.squeeze(0)
     
     def _apply_multi_layer_protection(
         self,

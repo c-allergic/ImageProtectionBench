@@ -12,50 +12,16 @@ from PIL import Image
 from typing import Dict, Union, List, Any, Optional
 import torchvision.transforms as transforms
 
-
-class BaseEffectivenessMetric:
-    """Base class for attack effectiveness metrics"""
-    
-    def __init__(self, device: str = "auto"):
-        if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-        
-        self.to_tensor = transforms.ToTensor()
-    
-    def _process_image(self, image: Union[Image.Image, torch.Tensor, np.ndarray]) -> torch.Tensor:
-        """Convert image to tensor format"""
-        if isinstance(image, Image.Image):
-            tensor = self.to_tensor(image)
-        elif isinstance(image, np.ndarray):
-            if image.dtype == np.uint8:
-                image = image.astype(np.float32) / 255.0
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                tensor = torch.from_numpy(image.transpose(2, 0, 1))
-            else:
-                tensor = torch.from_numpy(image)
-        elif isinstance(image, torch.Tensor):
-            tensor = image.clone()
-        else:
-            raise ValueError(f"Unsupported image type: {type(image)}")
-        
-        if tensor.max() > 1.0:
-            tensor = tensor / 255.0
-            
-        return tensor.to(self.device)
-    
-    def compute(self, **kwargs):
-        """Compute effectiveness metric"""
-        raise NotImplementedError
+from .base import EffectivenessMetric
+from data import pt_to_pil
 
 
-class CLIPScoreMetric(BaseEffectivenessMetric):
+class CLIPScoreMetric(EffectivenessMetric):
     """
     CLIP Score Metric
     
-    Measures semantic similarity between images and text prompts using CLIP model.
-    Used to evaluate whether generated videos maintain semantic alignment with prompts.
+    Measures semantic similarity between original and protected video frames using CLIP model.
+    Used to evaluate whether protected videos maintain semantic alignment with original videos.
     """
     
     def __init__(self, 
@@ -67,265 +33,106 @@ class CLIPScoreMetric(BaseEffectivenessMetric):
     
     def _load_model(self):
         """Load CLIP model"""
-        try:
-            import clip
-            self.model, self.preprocess = clip.load(self.model_name, device=self.device)
-            self.model.eval()
-            print(f"CLIP model ({self.model_name}) loaded successfully")
-        except ImportError:
-            print("CLIP not available. Install with: pip install git+https://github.com/openai/CLIP.git")
-            self.model = None
-            self.preprocess = None
-        except Exception as e:
-            print(f"Error loading CLIP model: {e}")
-            self.model = None
-            self.preprocess = None
+        import clip
+        self.model, self.preprocess = clip.load(self.model_name, device=self.device)
+        self.model.eval()
+        print(f"CLIP model ({self.model_name}) loaded successfully")
     
     def compute(self, 
-                images: Union[List[Image.Image], List[torch.Tensor], List[np.ndarray]],
-                prompts: Union[str, List[str]],
+                original_video: torch.Tensor,
+                protected_video: torch.Tensor,
                 **kwargs) -> Dict[str, float]:
         """
-        Compute CLIP scores between images and prompts
+        Compute CLIP scores between one original and one protected video
         
         Args:
-            images: List of images (or video frames)
-            prompts: Text prompt(s) to compare against
+            original_video: Original video tensor [T, C, H, W] in [0, 1] range
+            protected_video: Protected video tensor [T, C, H, W] in [0, 1] range
             **kwargs: Additional parameters
             
         Returns:
-            Dictionary with CLIP score statistics
+            Dictionary with CLIP score statistics for this video pair
         """
         if self.model is None:
             print("CLIP model not available, returning placeholder values")
-            return {
-                "average_clip_score": np.random.uniform(0.2, 0.8),
-                "max_clip_score": np.random.uniform(0.7, 0.9),
-                "min_clip_score": np.random.uniform(0.1, 0.3),
-                "std_clip_score": np.random.uniform(0.05, 0.15)
-            }
+            return None
         
-        # Handle single prompt
-        if isinstance(prompts, str):
-            prompts = [prompts] * len(images)
+        # Ensure videos have same number of frames
+        num_frames = min(original_video.size(0), protected_video.size(0))
+        original_video = original_video[:num_frames]
+        protected_video = protected_video[:num_frames]
         
-        clip_scores = []
+        frame_scores = []
         
         with torch.no_grad():
-            for image, prompt in zip(images, prompts):
-                # Preprocess image
-                if isinstance(image, Image.Image):
-                    image_input = self.preprocess(image).unsqueeze(0).to(self.device)
-                else:
-                    # Convert to PIL first
-                    tensor = self._process_image(image)
-                    pil_image = transforms.ToPILImage()(tensor.cpu())
-                    image_input = self.preprocess(pil_image).unsqueeze(0).to(self.device)
+            # Process each frame pair
+            for i in range(num_frames):
+                orig_frame = original_video[i]  # [C, H, W]
+                prot_frame = protected_video[i]  # [C, H, W]
                 
-                # Encode text
-                import clip
-                text_input = clip.tokenize([prompt]).to(self.device)
+                # Convert frames to PIL for CLIP preprocessing using pt_to_pil
+                orig_pil = pt_to_pil(orig_frame)
+                prot_pil = pt_to_pil(prot_frame)
+                
+                # Preprocess for CLIP
+                orig_input = self.preprocess(orig_pil).unsqueeze(0).to(self.device)
+                prot_input = self.preprocess(prot_pil).unsqueeze(0).to(self.device)
                 
                 # Get features
-                image_features = self.model.encode_image(image_input)
-                text_features = self.model.encode_text(text_input)
+                orig_features = self.model.encode_image(orig_input)
+                prot_features = self.model.encode_image(prot_input)
                 
                 # Normalize features
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                orig_features = orig_features / orig_features.norm(dim=-1, keepdim=True)
+                prot_features = prot_features / prot_features.norm(dim=-1, keepdim=True)
                 
                 # Compute similarity
-                similarity = torch.cosine_similarity(image_features, text_features, dim=-1)
-                clip_scores.append(similarity.item())
+                similarity = torch.cosine_similarity(orig_features, prot_features, dim=-1)
+                frame_scores.append(similarity.item())
         
         # Compute statistics
-        clip_scores = np.array(clip_scores)
+        frame_scores = np.array(frame_scores)
         return {
-            "average_clip_score": float(np.mean(clip_scores)),
-            "max_clip_score": float(np.max(clip_scores)),
-            "min_clip_score": float(np.min(clip_scores)),
-            "std_clip_score": float(np.std(clip_scores))
+            "average_clip_score": float(np.mean(frame_scores)),
+            # "max_clip_score": float(np.max(frame_scores)),
+            # "min_clip_score": float(np.min(frame_scores)),
+            # "std_clip_score": float(np.std(frame_scores)),
+            "total_frames": len(frame_scores)
         }
     
-    def compute_average_clip_score(self, 
-                                  images: Union[List[Image.Image], List[torch.Tensor], List[np.ndarray]],
-                                  prompts: Union[str, List[str]]) -> float:
-        """Compute average CLIP score (main metric)"""
-        scores = self.compute(images, prompts)
-        return scores["average_clip_score"]
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
-        return {
-            "name": "CLIP Score",
-            "description": "Semantic similarity between images and text using CLIP",
-            "range": [-1, 1],
-            "higher_is_better": True,
-            "model": self.model_name
-        }
-
-
-class AttackSuccessRateMetric(BaseEffectivenessMetric):
-    """
-    Attack Success Rate Metric
-    
-    Measures the success rate of attacks in degrading protection effectiveness.
-    """
-    
-    def __init__(self, 
-                 success_threshold: float = 0.1,
-                 **kwargs):
-        super().__init__(**kwargs)
-        self.success_threshold = success_threshold
-    
-    def compute(self, 
-                protected_scores: List[float],
-                attacked_scores: List[float],
-                metric_type: str = "higher_is_better",
-                **kwargs) -> Dict[str, float]:
+    def compute_multiple(self, 
+                        original_videos: torch.Tensor,
+                        protected_videos: torch.Tensor,
+                        **kwargs) -> Dict[str, float]:
         """
-        Compute attack success rate
+        Compute CLIP scores between multiple video pairs
         
         Args:
-            protected_scores: Scores for protected images
-            attacked_scores: Scores for attacked protected images
-            metric_type: Whether higher scores are better ("higher_is_better" or "lower_is_better")
+            original_videos: Original videos tensor [B, T, C, H, W] in [0, 1] range
+            protected_videos: Protected videos tensor [B, T, C, H, W] in [0, 1] range
             **kwargs: Additional parameters
             
         Returns:
-            Dictionary with success rate metrics
+            Dictionary with aggregated CLIP score statistics across all video pairs
         """
-        protected_scores = np.array(protected_scores)
-        attacked_scores = np.array(attacked_scores)
+        batch_size = original_videos.size(0)
+        all_scores = []
         
-        if metric_type == "higher_is_better":
-            # Attack is successful if score decreases significantly
-            score_changes = protected_scores - attacked_scores
-            successes = score_changes > self.success_threshold
-        else:
-            # Attack is successful if score increases significantly
-            score_changes = attacked_scores - protected_scores
-            successes = score_changes > self.success_threshold
-        
-        success_rate = np.mean(successes)
-        
-        # Additional statistics
-        avg_score_change = np.mean(score_changes)
-        max_score_change = np.max(score_changes)
-        min_score_change = np.min(score_changes)
-        
-        return {
-            "success_rate": float(success_rate),
-            "average_score_change": float(avg_score_change),
-            "max_score_change": float(max_score_change),
-            "min_score_change": float(min_score_change),
-            "total_attacks": len(protected_scores),
-            "successful_attacks": int(np.sum(successes))
-        }
-    
-    def compute_clip_score_degradation(self,
-                                     original_clip_scores: List[float],
-                                     attacked_clip_scores: List[float]) -> Dict[str, float]:
-        """
-        Compute CLIP score degradation due to attacks
-        
-        Args:
-            original_clip_scores: CLIP scores before attack
-            attacked_clip_scores: CLIP scores after attack
+        for i in range(batch_size):
+            # Extract single video from batch [T, C, H, W]
+            orig_video = original_videos[i]
+            prot_video = protected_videos[i]
             
-        Returns:
-            Dictionary with degradation metrics
-        """
-        return self.compute(
-            original_clip_scores,
-            attacked_clip_scores,
-            metric_type="higher_is_better"
-        )
-    
-    def compute_protection_bypass_rate(self,
-                                     protection_effectiveness_before: List[float],
-                                     protection_effectiveness_after: List[float]) -> Dict[str, float]:
-        """
-        Compute rate at which attacks bypass protection
+            # Compute CLIP score for this video pair
+            video_result = self.compute(orig_video, prot_video, **kwargs)
+            all_scores.append(video_result["average_clip_score"])
         
-        Args:
-            protection_effectiveness_before: Protection effectiveness before attack
-            protection_effectiveness_after: Protection effectiveness after attack
-            
-        Returns:
-            Dictionary with bypass rate metrics
-        """
-        return self.compute(
-            protection_effectiveness_before,
-            protection_effectiveness_after,
-            metric_type="higher_is_better"
-        )
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
+        # Aggregate results across all videos - 只保留average指标
+        all_scores = np.array(all_scores)
         return {
-            "name": "Attack Success Rate",
-            "description": "Measures effectiveness of attacks against protection",
-            "range": [0, 1],
-            "higher_is_better": True,  # For the attacker's perspective
-            "threshold": self.success_threshold
+            "average_clip_score": float(np.mean(all_scores)),
+            "total_videos": len(all_scores)
+            # "max_clip_score": float(np.max(all_scores)),
+            # "min_clip_score": float(np.min(all_scores)),
+            # "std_clip_score": float(np.std(all_scores))
         }
-
-
-class ProtectionRobustnessMetric(BaseEffectivenessMetric):
-    """
-    Protection Robustness Metric
-    
-    Measures how well protection methods resist various attacks.
-    """
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-    
-    def compute(self,
-                attack_results: Dict[str, Dict[str, float]],
-                **kwargs) -> Dict[str, float]:
-        """
-        Compute overall protection robustness
-        
-        Args:
-            attack_results: Dictionary mapping attack names to their results
-                          Each result should contain success_rate and other metrics
-            **kwargs: Additional parameters
-            
-        Returns:
-            Dictionary with robustness metrics
-        """
-        attack_names = list(attack_results.keys())
-        success_rates = [attack_results[attack]["success_rate"] for attack in attack_names]
-        
-        # Overall robustness = 1 - average success rate
-        avg_success_rate = np.mean(success_rates)
-        overall_robustness = 1.0 - avg_success_rate
-        
-        # Worst-case robustness = 1 - max success rate
-        max_success_rate = np.max(success_rates)
-        worst_case_robustness = 1.0 - max_success_rate
-        
-        # Best-case robustness = 1 - min success rate
-        min_success_rate = np.min(success_rates)
-        best_case_robustness = 1.0 - min_success_rate
-        
-        return {
-            "overall_robustness": float(overall_robustness),
-            "worst_case_robustness": float(worst_case_robustness),
-            "best_case_robustness": float(best_case_robustness),
-            "average_attack_success": float(avg_success_rate),
-            "max_attack_success": float(max_success_rate),
-            "min_attack_success": float(min_success_rate),
-            "num_attacks_tested": len(attack_names)
-        }
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
-        return {
-            "name": "Protection Robustness",
-            "description": "Overall robustness of protection against multiple attacks",
-            "range": [0, 1],
-            "higher_is_better": True
-        } 

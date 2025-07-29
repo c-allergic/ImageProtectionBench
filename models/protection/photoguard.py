@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Optional
 import numpy as np
-from .base import AdversarialProtection
+from .base import ProtectionBase
 
 
-class PhotoGuard(AdversarialProtection):
+class PhotoGuard(ProtectionBase):
     """
     PhotoGuard: 针对文本到图像扩散模型的保护方法
     基于论文: "PhotoGuard: Disrupting Diffusion-based Generative Models for Copyright Protection"
@@ -33,46 +33,41 @@ class PhotoGuard(AdversarialProtection):
         """
         self.guidance_scale = guidance_scale
         self.immunization_strength = immunization_strength
-        super().__init__(
-            target_model=diffusion_model,
-            epsilon=epsilon,
-            num_steps=num_steps,
-            step_size=step_size,
-            **kwargs
-        )
+        self.diffusion_model = diffusion_model
+        self.epsilon = epsilon
+        self.num_steps = num_steps
+        self.step_size = step_size
+        super().__init__(**kwargs)
     
     def _setup_model(self):
         """设置模型"""
         # PhotoGuard不需要额外的模型，直接使用扩散模型
         pass
     
-    def protect(
-        self,
-        images: torch.Tensor,
-        prompts: Optional[list] = None,
-        **kwargs
-    ) -> torch.Tensor:
+    def protect(self, image: torch.Tensor, prompt: str = "a photo", **kwargs) -> torch.Tensor:
         """
-        使用PhotoGuard保护图像
+        使用PhotoGuard保护单张图像
         
         Args:
-            images: 输入图像张量 [B, C, H, W]
-            prompts: 文本提示列表
+            image: 单张图像张量 [C, H, W]
+            prompt: 文本提示
             **kwargs: 其他参数
             
         Returns:
-            受保护的图像张量
+            受保护的图像张量 [C, H, W]
         """
-        if prompts is None:
-            prompts = ["a photo"] * images.size(0)
-        
         # 将图像移到正确的设备
-        images = images.to(self.device)
+        image = image.to(self.device)
+        
+        # 添加批次维度
+        image_batch = image.unsqueeze(0)  # [1, C, H, W]
+        prompts = [prompt]
         
         # 使用改进的对抗攻击
-        protected_images = self._photoguard_attack(images, prompts)
+        protected_batch = self._photoguard_attack(image_batch, prompts)
         
-        return protected_images
+        # 移除批次维度
+        return protected_batch.squeeze(0)
     
     def _photoguard_attack(
         self,
@@ -180,11 +175,15 @@ class PhotoGuard(AdversarialProtection):
         # 预测噪声
         try:
             # 尝试调用扩散模型
-            predicted_noise = self.target_model(
-                noisy_images,
-                timesteps,
-                encoder_hidden_states=text_embeddings
-            )
+            if self.diffusion_model is not None:
+                predicted_noise = self.diffusion_model(
+                    noisy_images,
+                    timesteps,
+                    encoder_hidden_states=text_embeddings
+                )
+            else:
+                # 如果没有扩散模型，使用简化的损失
+                predicted_noise = torch.randn_like(noise)
             
             # 计算损失（最大化预测误差）
             loss = -F.mse_loss(predicted_noise, noise)

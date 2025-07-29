@@ -13,45 +13,10 @@ from typing import Dict, Union, List, Any
 import torchvision.transforms as transforms
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 
-
-class BaseImageMetric:
-    """Base class for image quality metrics"""
-    
-    def __init__(self, device: str = "auto"):
-        if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-        
-        self.to_tensor = transforms.ToTensor()
-    
-    def _process_image(self, image: Union[Image.Image, torch.Tensor, np.ndarray]) -> torch.Tensor:
-        """Convert image to tensor format"""
-        if isinstance(image, Image.Image):
-            tensor = self.to_tensor(image)
-        elif isinstance(image, np.ndarray):
-            if image.dtype == np.uint8:
-                image = image.astype(np.float32) / 255.0
-            if len(image.shape) == 3 and image.shape[2] == 3:
-                tensor = torch.from_numpy(image.transpose(2, 0, 1))
-            else:
-                tensor = torch.from_numpy(image)
-        elif isinstance(image, torch.Tensor):
-            tensor = image.clone()
-        else:
-            raise ValueError(f"Unsupported image type: {type(image)}")
-        
-        if tensor.max() > 1.0:
-            tensor = tensor / 255.0
-            
-        return tensor.to(self.device)
-    
-    def compute(self, image1, image2, **kwargs):
-        """Compute metric between two images"""
-        raise NotImplementedError
+from .base import ImageQualityMetric
 
 
-class PSNRMetric(BaseImageMetric):
+class PSNRMetric(ImageQualityMetric):
     """
     Peak Signal-to-Noise Ratio (PSNR) Metric
     
@@ -62,10 +27,10 @@ class PSNRMetric(BaseImageMetric):
     def __init__(self, max_val: float = 1.0, **kwargs):
         super().__init__(**kwargs)
         self.max_val = max_val
-    
+
     def compute(self, 
-                image1: Union[Image.Image, torch.Tensor, np.ndarray],
-                image2: Union[Image.Image, torch.Tensor, np.ndarray],
+                image1: torch.Tensor,
+                image2: torch.Tensor,
                 **kwargs) -> float:
         """
         Compute PSNR between two images
@@ -79,17 +44,9 @@ class PSNRMetric(BaseImageMetric):
             PSNR value in dB
         """
         # Convert to numpy arrays for skimage
-        if isinstance(image1, (torch.Tensor, Image.Image)):
-            tensor1 = self._process_image(image1)
-            array1 = tensor1.cpu().numpy().transpose(1, 2, 0)
-        else:
-            array1 = image1
+        array1 = image1.cpu().numpy().transpose(1, 2, 0)
             
-        if isinstance(image2, (torch.Tensor, Image.Image)):
-            tensor2 = self._process_image(image2)
-            array2 = tensor2.cpu().numpy().transpose(1, 2, 0)
-        else:
-            array2 = image2
+        array2 = image2.cpu().numpy().transpose(1, 2, 0)
         
         # Compute PSNR
         psnr_value = peak_signal_noise_ratio(
@@ -99,27 +56,43 @@ class PSNRMetric(BaseImageMetric):
         
         return float(psnr_value)
     
-    def batch_compute(self, 
-                     images1: List[Union[Image.Image, torch.Tensor, np.ndarray]],
-                     images2: List[Union[Image.Image, torch.Tensor, np.ndarray]]) -> List[float]:
-        """Compute PSNR for batch of image pairs"""
-        psnr_values = []
-        for img1, img2 in zip(images1, images2):
-            psnr_values.append(self.compute(img1, img2))
-        return psnr_values
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
+    def compute_multiple(self, 
+                        original_images: torch.Tensor,
+                        protected_images: torch.Tensor,
+                        **kwargs) -> Dict[str, Any]:
+        """
+        Compute PSNR for multiple image pairs
+        
+        Args:
+            original_images: Original images tensor [B, C, H, W] in [0, 1] range
+            protected_images: Protected images tensor [B, C, H, W] in [0, 1] range
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with PSNR statistics and individual scores
+        """
+        batch_size = original_images.size(0)
+        psnr_scores = []
+        
+        for i in range(batch_size):
+            # Extract single image from batch [C, H, W]
+            orig_image = original_images[i]
+            prot_image = protected_images[i]
+            
+            # Compute PSNR for this image pair
+            psnr_score = self.compute(orig_image, prot_image, **kwargs)
+            psnr_scores.append(psnr_score)
+        
+        # Aggregate results - 只保留average指标
+        psnr_scores = np.array(psnr_scores)
         return {
-            "name": "PSNR",
-            "description": "Peak Signal-to-Noise Ratio",
-            "range": [0, float('inf')],
-            "higher_is_better": True,
-            "unit": "dB"
+            "average_psnr": float(np.mean(psnr_scores))
+            # "max_psnr": float(np.max(psnr_scores)),
+            # "min_psnr": float(np.min(psnr_scores)),
+            # "std_psnr": float(np.std(psnr_scores))
         }
-
-
-class SSIMMetric(BaseImageMetric):
+    
+class SSIMMetric(ImageQualityMetric):
     """
     Structural Similarity Index (SSIM) Metric
     
@@ -138,8 +111,8 @@ class SSIMMetric(BaseImageMetric):
         self.multichannel = multichannel
     
     def compute(self, 
-                image1: Union[Image.Image, torch.Tensor, np.ndarray],
-                image2: Union[Image.Image, torch.Tensor, np.ndarray],
+                image1: torch.Tensor,
+                image2: torch.Tensor,
                 **kwargs) -> float:
         """
         Compute SSIM between two images
@@ -153,17 +126,9 @@ class SSIMMetric(BaseImageMetric):
             SSIM value between -1 and 1
         """
         # Convert to numpy arrays for skimage
-        if isinstance(image1, (torch.Tensor, Image.Image)):
-            tensor1 = self._process_image(image1)
-            array1 = tensor1.cpu().numpy().transpose(1, 2, 0)
-        else:
-            array1 = image1
+        array1 = image1.cpu().numpy().transpose(1, 2, 0)
             
-        if isinstance(image2, (torch.Tensor, Image.Image)):
-            tensor2 = self._process_image(image2)
-            array2 = tensor2.cpu().numpy().transpose(1, 2, 0)
-        else:
-            array2 = image2
+        array2 = image2.cpu().numpy().transpose(1, 2, 0)
         
         # Handle grayscale images
         if array1.shape[-1] == 1:
@@ -183,27 +148,43 @@ class SSIMMetric(BaseImageMetric):
         
         return float(ssim_value)
     
-    def batch_compute(self, 
-                     images1: List[Union[Image.Image, torch.Tensor, np.ndarray]],
-                     images2: List[Union[Image.Image, torch.Tensor, np.ndarray]]) -> List[float]:
-        """Compute SSIM for batch of image pairs"""
-        ssim_values = []
-        for img1, img2 in zip(images1, images2):
-            ssim_values.append(self.compute(img1, img2))
-        return ssim_values
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
+    def compute_multiple(self, 
+                        original_images: torch.Tensor,
+                        protected_images: torch.Tensor,
+                        **kwargs) -> Dict[str, Any]:
+        """
+        Compute SSIM for multiple image pairs
+        
+        Args:
+            original_images: Original images tensor [B, C, H, W] in [0, 1] range
+            protected_images: Protected images tensor [B, C, H, W] in [0, 1] range
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with SSIM statistics and individual scores
+        """
+        batch_size = original_images.size(0)
+        ssim_scores = []
+        
+        for i in range(batch_size):
+            # Extract single image from batch [C, H, W]
+            orig_image = original_images[i]
+            prot_image = protected_images[i]
+            
+            # Compute SSIM for this image pair
+            ssim_score = self.compute(orig_image, prot_image, **kwargs)
+            ssim_scores.append(ssim_score)
+        
+        # Aggregate results - 只保留average指标
+        ssim_scores = np.array(ssim_scores)
         return {
-            "name": "SSIM",
-            "description": "Structural Similarity Index",
-            "range": [-1, 1],
-            "higher_is_better": True,
-            "unit": "similarity"
+            "average_ssim": float(np.mean(ssim_scores))
+            # "max_ssim": float(np.max(ssim_scores)),
+            # "min_ssim": float(np.min(ssim_scores)),
+            # "std_ssim": float(np.std(ssim_scores))
         }
 
-
-class LPIPSMetric(BaseImageMetric):
+class LPIPSMetric(ImageQualityMetric):
     """
     Learned Perceptual Image Patch Similarity (LPIPS) Metric
     
@@ -232,8 +213,8 @@ class LPIPSMetric(BaseImageMetric):
             self.model = None
     
     def compute(self, 
-                image1: Union[Image.Image, torch.Tensor, np.ndarray],
-                image2: Union[Image.Image, torch.Tensor, np.ndarray],
+                image1: torch.Tensor,
+                image2: torch.Tensor,
                 **kwargs) -> float:
         """
         Compute LPIPS between two images
@@ -249,14 +230,10 @@ class LPIPSMetric(BaseImageMetric):
         if self.model is None:
             print("LPIPS model not available, returning placeholder value")
             return 0.0
-        
-        # Convert to tensors
-        tensor1 = self._process_image(image1)
-        tensor2 = self._process_image(image2)
-        
+                
         # Add batch dimension and normalize to [-1, 1]
-        tensor1 = tensor1.unsqueeze(0) * 2.0 - 1.0
-        tensor2 = tensor2.unsqueeze(0) * 2.0 - 1.0
+        tensor1 = image1.unsqueeze(0) * 2.0 - 1.0
+        tensor2 = image2.unsqueeze(0) * 2.0 - 1.0
         
         # Compute LPIPS
         with torch.no_grad():
@@ -264,24 +241,47 @@ class LPIPSMetric(BaseImageMetric):
         
         return float(lpips_value.item())
     
-    def batch_compute(self, 
-                     images1: List[Union[Image.Image, torch.Tensor, np.ndarray]],
-                     images2: List[Union[Image.Image, torch.Tensor, np.ndarray]]) -> List[float]:
-        """Compute LPIPS for batch of image pairs"""
-        if self.model is None:
-            return [0.0] * len(images1)
+    def compute_multiple(self, 
+                        original_images: torch.Tensor,
+                        protected_images: torch.Tensor,
+                        **kwargs) -> Dict[str, Any]:
+        """
+        Compute LPIPS for multiple image pairs
         
-        lpips_values = []
-        for img1, img2 in zip(images1, images2):
-            lpips_values.append(self.compute(img1, img2))
-        return lpips_values
-    
-    def get_metric_info(self) -> Dict[str, Any]:
-        """Get metric information"""
+        Args:
+            original_images: Original images tensor [B, C, H, W] in [0, 1] range
+            protected_images: Protected images tensor [B, C, H, W] in [0, 1] range
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary with LPIPS statistics and individual scores
+        """
+        if self.model is None:
+            batch_size = original_images.size(0)
+            return {
+                "average_lpips": 0.0
+                # "max_lpips": 0.0,
+                # "min_lpips": 0.0,
+                # "std_lpips": 0.0
+            }
+        
+        batch_size = original_images.size(0)
+        lpips_scores = []
+        
+        for i in range(batch_size):
+            # Extract single image from batch [C, H, W]
+            orig_image = original_images[i]
+            prot_image = protected_images[i]
+            
+            # Compute LPIPS for this image pair
+            lpips_score = self.compute(orig_image, prot_image, **kwargs)
+            lpips_scores.append(lpips_score)
+        
+        # Aggregate results - 只保留average指标
+        lpips_scores = np.array(lpips_scores)
         return {
-            "name": "LPIPS",
-            "description": "Learned Perceptual Image Patch Similarity",
-            "range": [0, float('inf')],
-            "higher_is_better": False,
-            "unit": "distance"
-        } 
+            "average_lpips": float(np.mean(lpips_scores))
+            # "max_lpips": float(np.max(lpips_scores)),
+            # "min_lpips": float(np.min(lpips_scores)),
+            # "std_lpips": float(np.std(lpips_scores))
+        }

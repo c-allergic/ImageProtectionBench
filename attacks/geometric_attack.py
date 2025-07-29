@@ -11,29 +11,10 @@ from PIL import Image
 import torchvision.transforms.functional as F
 from typing import Dict, Union, Any, Tuple
 from .base import BaseAttack
+from data import pt_to_pil
+from torchvision import transforms
 
-
-class GeometricAttack(BaseAttack):
-    """
-    Base class for geometric transformation attacks
-    """
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-    
-    def attack(self, image, **kwargs):
-        """Default implementation - should be overridden by subclasses"""
-        return image
-    
-    def get_attack_info(self) -> Dict[str, Any]:
-        return {
-            "name": "Geometric Attack",
-            "type": "Geometric",
-            "description": "Base class for geometric transformations"
-        }
-
-
-class RotationAttack(GeometricAttack):
+class RotationAttack(BaseAttack):
     """
     Rotation Attack
     
@@ -58,59 +39,56 @@ class RotationAttack(GeometricAttack):
         self.fill_color = fill_color
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                angle: float = None,
                fill_color: Tuple[int, int, int] = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply rotation to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             angle: Rotation angle (overrides default)
             fill_color: Fill color (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Rotated image in same format as input
+            Rotated image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to PIL Image for rotation
-        if isinstance(image, Image.Image):
-            pil_image = image
-        else:
-            tensor = self._process_input(image)
-            pil_image = self.to_pil(tensor.cpu())
-        
         # Use provided parameters or defaults
         rot_angle = angle if angle is not None else self.angle
         fill = fill_color if fill_color is not None else self.fill_color
         
+        # Convert tensor to PIL Image for rotation
+        pil_image = pt_to_pil(image.cpu())
+        
         # Apply rotation
         rotated_image = pil_image.rotate(rot_angle, fillcolor=fill)
         
-        # Convert back to original format
-        if original_format == Image.Image:
-            return rotated_image
-        else:
-            tensor = self.to_tensor(rotated_image).to(self.device)
-            return self._process_output(tensor, original_format)
+        # Convert back to tensor
+        return transforms.ToTensor()(rotated_image).to(self.device)
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
+    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
+        """Get valid parameter ranges"""
         return {
-            "name": "Rotation",
-            "type": "Geometric",
-            "description": "Rotates image by specified angle",
-            "parameters": {
-                "angle": self.angle,
-                "fill_color": self.fill_color
-            }
+            "angle": {"min": 0.0, "max": 360.0, "default": 15.0},
+            "fill_color": {"type": "tuple", "min": 0, "max": 255, "default": (0, 0, 0)}
         }
+    
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Rotation",
+    #         "type": "Geometric",
+    #         "description": "Rotates image by specified angle",
+    #         "parameters": {
+    #             "angle": self.angle,
+    #             "fill_color": self.fill_color
+    #         }
+    #     }
 
 
-class CropAttack(GeometricAttack):
+class CropAttack(BaseAttack):
     """
     Crop Attack
     
@@ -135,34 +113,28 @@ class CropAttack(GeometricAttack):
         self.position = position
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                crop_ratio: float = None,
                position: str = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply cropping to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             crop_ratio: Crop ratio (overrides default)
             position: Crop position (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Cropped and resized image in same format as input
+            Cropped and resized image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to PIL Image for cropping
-        if isinstance(image, Image.Image):
-            pil_image = image
-        else:
-            tensor = self._process_input(image)
-            pil_image = self.to_pil(tensor.cpu())
-        
         # Use provided parameters or defaults
         ratio = crop_ratio if crop_ratio is not None else self.crop_ratio
         pos = position if position is not None else self.position
+        
+        # Convert tensor to PIL Image for cropping
+        pil_image = pt_to_pil(image.cpu())
         
         # Calculate crop size
         original_size = pil_image.size
@@ -200,27 +172,23 @@ class CropAttack(GeometricAttack):
         # Resize back to original size
         resized_image = cropped_image.resize(original_size, Image.BILINEAR)
         
-        # Convert back to original format
-        if original_format == Image.Image:
-            return resized_image
-        else:
-            tensor = self.to_tensor(resized_image).to(self.device)
-            return self._process_output(tensor, original_format)
+        # Convert back to tensor
+        return transforms.ToTensor()(resized_image).to(self.device)
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
-        return {
-            "name": "Crop",
-            "type": "Geometric", 
-            "description": "Crops and resizes image",
-            "parameters": {
-                "crop_ratio": self.crop_ratio,
-                "position": self.position
-            }
-        }
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Crop",
+    #         "type": "Geometric", 
+    #         "description": "Crops and resizes image",
+    #         "parameters": {
+    #             "crop_ratio": self.crop_ratio,
+    #             "position": self.position
+    #         }
+    #     }
 
 
-class ScalingAttack(GeometricAttack):
+class ScalingAttack(BaseAttack):
     """
     Scaling Attack
     
@@ -245,34 +213,28 @@ class ScalingAttack(GeometricAttack):
         self.mode = mode
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                scale_factor: float = None,
                mode: str = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply scaling to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             scale_factor: Scaling factor (overrides default)
             mode: Interpolation mode (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Scaled image in same format as input
+            Scaled image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to PIL Image for scaling
-        if isinstance(image, Image.Image):
-            pil_image = image
-        else:
-            tensor = self._process_input(image)
-            pil_image = self.to_pil(tensor.cpu())
-        
         # Use provided parameters or defaults
         scale = scale_factor if scale_factor is not None else self.scale_factor
         interp_mode = mode if mode is not None else self.mode
+        
+        # Convert tensor to PIL Image for scaling
+        pil_image = pt_to_pil(image.cpu())
         
         # Calculate new size
         original_size = pil_image.size
@@ -292,27 +254,30 @@ class ScalingAttack(GeometricAttack):
         if scale != 1.0:
             scaled_image = scaled_image.resize(original_size, resample)
         
-        # Convert back to original format
-        if original_format == Image.Image:
-            return scaled_image
-        else:
-            tensor = self.to_tensor(scaled_image).to(self.device)
-            return self._process_output(tensor, original_format)
+        # Convert back to tensor
+        return transforms.ToTensor()(scaled_image).to(self.device)
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
+    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
+        """Get valid parameter ranges"""
         return {
-            "name": "Scaling",
-            "type": "Geometric",
-            "description": "Scales image by specified factor",
-            "parameters": {
-                "scale_factor": self.scale_factor,
-                "mode": self.mode
-            }
+            "scale_factor": {"min": 0.0, "max": 2.0, "default": 0.8},
+            "mode": {"type": "str", "choices": ["bilinear", "nearest"], "default": "bilinear"}
         }
+    
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Scaling",
+    #         "type": "Geometric",
+    #         "description": "Scales image by specified factor",
+    #         "parameters": {
+    #             "scale_factor": self.scale_factor,
+    #             "mode": self.mode
+    #         }
+    #     }
 
 
-class WaveAttack(GeometricAttack):
+class WaveAttack(BaseAttack):
     """
     Wave Distortion Attack
     
@@ -340,39 +305,31 @@ class WaveAttack(GeometricAttack):
         self.direction = direction
     
     def attack(self, 
-               image: Union[Image.Image, torch.Tensor, np.ndarray],
+               image: torch.Tensor,
                amplitude: float = None,
                frequency: float = None,
                direction: str = None,
-               **kwargs) -> Union[Image.Image, torch.Tensor, np.ndarray]:
+               **kwargs) -> torch.Tensor:
         """
         Apply wave distortion to image
         
         Args:
-            image: Input image
+            image: Input image tensor [C, H, W] in [0, 1] range
             amplitude: Wave amplitude (overrides default)
             frequency: Wave frequency (overrides default)
             direction: Wave direction (overrides default)
             **kwargs: Additional parameters
             
         Returns:
-            Wave-distorted image in same format as input
+            Wave-distorted image tensor [C, H, W] in [0, 1] range
         """
-        original_format = type(image)
-        
-        # Convert to tensor
-        tensor = self._process_input(image)
-        
         # Use provided parameters or defaults
         amp = amplitude if amplitude is not None else self.amplitude
         freq = frequency if frequency is not None else self.frequency
         wave_dir = direction if direction is not None else self.direction
         
-        # Apply wave distortion
-        distorted_tensor = self._apply_wave_distortion(tensor, amp, freq, wave_dir)
-        
-        # Convert back to original format
-        return self._process_output(distorted_tensor, original_format)
+        # Apply wave distortion directly on tensor
+        return self._apply_wave_distortion(image, amp, freq, wave_dir)
     
     def _apply_wave_distortion(self, tensor: torch.Tensor, amp: float, freq: float, direction: str) -> torch.Tensor:
         """Apply wave distortion to tensor"""
@@ -417,15 +374,23 @@ class WaveAttack(GeometricAttack):
         
         return distorted.squeeze(0)  # [C, H, W]
     
-    def get_attack_info(self) -> Dict[str, Any]:
-        """Get attack information"""
+    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
+        """Get valid parameter ranges"""
         return {
-            "name": "Wave Distortion",
-            "type": "Geometric",
-            "description": "Applies wave-like distortion to image",
-            "parameters": {
-                "amplitude": self.amplitude,
-                "frequency": self.frequency,
-                "direction": self.direction
-            }
-        } 
+            "amplitude": {"min": 0.0, "max": 20.0, "default": 10.0},
+            "frequency": {"min": 0.0, "max": 1.0, "default": 0.1},
+            "direction": {"type": "str", "choices": ["horizontal", "vertical", "both"], "default": "horizontal"}
+        }
+    
+    # def get_attack_info(self) -> Dict[str, Any]:
+    #     """Get attack information"""
+    #     return {
+    #         "name": "Wave Distortion",
+    #         "type": "Geometric",
+    #         "description": "Applies wave-like distortion to image",
+    #         "parameters": {
+    #             "amplitude": self.amplitude,
+    #             "frequency": self.frequency,
+    #             "direction": self.direction
+    #         }
+    #     } 
