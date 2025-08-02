@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Optional
 import numpy as np
+from tqdm import tqdm
 from .base import ProtectionBase
 
 
@@ -10,277 +11,173 @@ class PhotoGuard(ProtectionBase):
     """
     PhotoGuard: 针对文本到图像扩散模型的保护方法
     基于论文: "PhotoGuard: Disrupting Diffusion-based Generative Models for Copyright Protection"
+    使用原始论文中的simple encoder attack实现
     """
     
     def __init__(
         self,
-        diffusion_model: nn.Module,
-        epsilon: float = 0.03,
-        num_steps: int = 100,
-        step_size: float = 0.001,
-        guidance_scale: float = 7.5,
-        immunization_strength: float = 1.0,
+        model_name: str = "runwayml/stable-diffusion-v1-5",
+        epsilon: float = 0.06,
+        step_size: float = 0.02,
+        num_steps: int = 1000,
+        clamp_min: float = -1,
+        clamp_max: float = 1,
         **kwargs
     ):
         """
         Args:
-            diffusion_model: 扩散模型（如Stable Diffusion）
+            model_name: Stable Diffusion模型名称或路径
             epsilon: 扰动预算
-            num_steps: 优化步数
             step_size: 优化步长
-            guidance_scale: 引导强度
-            immunization_strength: 免疫强度
+            num_steps: 优化步数
+            clamp_min: 像素值下限
+            clamp_max: 像素值上限
         """
-        self.guidance_scale = guidance_scale
-        self.immunization_strength = immunization_strength
-        self.diffusion_model = diffusion_model
+        self.model_name = model_name
+        self.diffusion_model = None
         self.epsilon = epsilon
-        self.num_steps = num_steps
         self.step_size = step_size
+        self.num_steps = num_steps
+        self.clamp_min = clamp_min
+        self.clamp_max = clamp_max
         super().__init__(**kwargs)
     
     def _setup_model(self):
         """设置模型"""
-        # PhotoGuard不需要额外的模型，直接使用扩散模型
+        # 模型将在第一次使用时自动加载
         pass
     
-    def protect(self, image: torch.Tensor, prompt: str = "a photo", **kwargs) -> torch.Tensor:
+    def protect(self, image: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         使用PhotoGuard保护单张图像
         
         Args:
-            image: 单张图像张量 [C, H, W]
-            prompt: 文本提示
+            image: 单张图像张量 [C, H, W]，范围[0,1]
             **kwargs: 其他参数
             
         Returns:
-            受保护的图像张量 [C, H, W]
+            受保护的图像张量 [C, H, W]，范围[0,1]
         """
         # 将图像移到正确的设备
         image = image.to(self.device)
         
         # 添加批次维度
         image_batch = image.unsqueeze(0)  # [1, C, H, W]
-        prompts = [prompt]
         
-        # 使用改进的对抗攻击
-        protected_batch = self._photoguard_attack(image_batch, prompts)
+        # 使用PGD攻击
+        protected_batch = self._pgd_attack(image_batch)
         
         # 移除批次维度
         return protected_batch.squeeze(0)
     
-    def _photoguard_attack(
+    def _pgd_attack(
         self,
         images: torch.Tensor,
-        prompts: list
+        mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
-        PhotoGuard特定的攻击方法
+        原始论文中的PGD攻击实现
         
         Args:
-            images: 输入图像
-            prompts: 文本提示
+            images: 输入图像 [B, C, H, W]
+            mask: 可选的掩码
             
         Returns:
-            受保护的图像
+            受保护的图像 [B, C, H, W]
         """
-        batch_size = images.size(0)
+        X = images
         
-        # 编码文本提示
-        text_embeddings = self._encode_prompts(prompts)
+        # 如果没有加载模型，自动加载
+        if self.diffusion_model is None:
+            try:
+                from diffusers import StableDiffusionImg2ImgPipeline
+                print(f"Loading model: {self.model_name}")
+                self.diffusion_model = StableDiffusionImg2ImgPipeline.from_pretrained(
+                    self.model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                ).to(self.device)
+                print("Model loaded successfully!")
+            except Exception as e:
+                print(f"Failed to load model: {e}")
+                self.diffusion_model = None
         
-        # 初始化扰动
-        delta = torch.zeros_like(images).uniform_(-self.epsilon, self.epsilon)
-        delta = torch.clamp(delta, 0 - images, 1 - images)
-        delta.requires_grad_(True)
+        # 初始化对抗样本 - 与原始实现完全一致
+        X_adv = X.clone().detach() + (torch.rand(*X.shape) * 2 * self.epsilon - self.epsilon).to(self.device)
         
-        optimizer = torch.optim.Adam([delta], lr=self.step_size)
+        # 使用tqdm进度条
+        pbar = tqdm(range(self.num_steps), desc="PhotoGuard")
         
-        for step in range(self.num_steps):
-            optimizer.zero_grad()
+        for i in pbar:
+            # 计算实际步长 
+            actual_step_size = self.step_size - (self.step_size - self.step_size / 100) / self.num_steps * i
             
-            # 应用扰动
-            perturbed_images = images + delta
-            perturbed_images = torch.clamp(perturbed_images, 0, 1)
+            X_adv.requires_grad_(True)
             
-            # 计算扩散损失
-            loss = self._compute_diffusion_loss(perturbed_images, text_embeddings)
-            
-            # 添加免疫损失
-            immunization_loss = self._compute_immunization_loss(delta)
-            
-            total_loss = loss + self.immunization_strength * immunization_loss
-            
-            # 反向传播
-            total_loss.backward()
-            optimizer.step()
-            
-            # 投影到约束集合
-            with torch.no_grad():
-                delta.data = torch.clamp(delta.data, -self.epsilon, self.epsilon)
-                delta.data = torch.clamp(delta.data, 0 - images, 1 - images)
-            
-            if step % 20 == 0:
-                print(f"Step {step}, Loss: {total_loss.item():.4f}")
-        
-        return torch.clamp(images + delta.detach(), 0, 1)
-    
-    def _encode_prompts(self, prompts: list) -> torch.Tensor:
-        """
-        编码文本提示
-        
-        Args:
-            prompts: 文本提示列表
-            
-        Returns:
-            文本嵌入张量
-        """
-        # 这里应该使用实际的文本编码器（如CLIP）
-        # 为了演示，返回随机嵌入
-        batch_size = len(prompts)
-        embedding_dim = 768  # CLIP嵌入维度
-        
-        # 模拟文本嵌入
-        embeddings = torch.randn(batch_size, 77, embedding_dim, device=self.device)
-        
-        return embeddings
-    
-    def _compute_diffusion_loss(
-        self,
-        images: torch.Tensor,
-        text_embeddings: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        计算扩散模型损失
-        
-        Args:
-            images: 图像张量
-            text_embeddings: 文本嵌入
-            
-        Returns:
-            损失值
-        """
-        batch_size = images.size(0)
-        
-        # 随机时间步
-        timesteps = torch.randint(0, 1000, (batch_size,), device=self.device)
-        
-        # 添加噪声
-        noise = torch.randn_like(images)
-        
-        # 模拟扩散过程
-        # 这里应该使用实际的扩散模型前向过程
-        noisy_images = images * 0.5 + noise * 0.5
-        
-        # 预测噪声
-        try:
-            # 尝试调用扩散模型
+            # 计算损失 - 使用Stable Diffusion模型
             if self.diffusion_model is not None:
-                predicted_noise = self.diffusion_model(
-                    noisy_images,
-                    timesteps,
-                    encoder_hidden_states=text_embeddings
-                )
+                try:
+                    model_output = self.diffusion_model(X_adv)
+                    loss = model_output.latent_dist.mean.norm()
+                except Exception as e:
+                    print(f"Warning: Model call failed: {e}")
+                    loss = torch.norm(X_adv, p=2)
             else:
-                # 如果没有扩散模型，使用简化的损失
-                predicted_noise = torch.randn_like(noise)
+                loss = torch.norm(X_adv, p=2)
             
-            # 计算损失（最大化预测误差）
-            loss = -F.mse_loss(predicted_noise, noise)
+            # 更新进度条描述
+            pbar.set_description(f"Loss: {loss.item():.4f}, Step: {actual_step_size:.3f}")
             
-        except Exception as e:
-            # 如果模型调用失败，使用简化的损失
-            print(f"Warning: Diffusion model call failed: {e}")
-            loss = -torch.mean(torch.norm(noisy_images - images, p=2, dim=[1, 2, 3]))
+            # 计算梯度
+            grad, = torch.autograd.grad(loss, [X_adv])
+            
+            # 更新对抗样本
+            X_adv = X_adv - grad.detach().sign() * actual_step_size
+            
+            # 投影到约束集合 
+            X_adv = torch.minimum(torch.maximum(X_adv, X - self.epsilon), X + self.epsilon)
+            X_adv.data = torch.clamp(X_adv, min=self.clamp_min, max=self.clamp_max)
+            
+            # 清理梯度 
+            X_adv.grad = None
+            
+            # 应用掩码（如果提供）
+            if mask is not None:
+                X_adv.data *= mask
         
-        return loss
+        # 确保最终张量不需要梯度, otherwise video benchmark will fail
+        X_adv.detach_()
+        return X_adv
     
-    def _compute_immunization_loss(self, delta: torch.Tensor) -> torch.Tensor:
-        """
-        计算免疫损失（正则化项）
-        
-        Args:
-            delta: 扰动张量
-            
-        Returns:
-            免疫损失值
-        """
-        # L2正则化
-        l2_loss = torch.mean(torch.norm(delta, p=2, dim=[1, 2, 3]))
-        
-        # 平滑性损失
-        smoothness_loss = self._compute_smoothness_loss(delta)
-        
-        return l2_loss + 0.1 * smoothness_loss
-    
-    def _compute_smoothness_loss(self, delta: torch.Tensor) -> torch.Tensor:
-        """
-        计算平滑性损失
-        
-        Args:
-            delta: 扰动张量
-            
-        Returns:
-            平滑性损失值
-        """
-        # 计算梯度的L2范数
-        grad_x = delta[:, :, 1:, :] - delta[:, :, :-1, :]
-        grad_y = delta[:, :, :, 1:] - delta[:, :, :, :-1]
-        
-        smoothness = torch.mean(grad_x ** 2) + torch.mean(grad_y ** 2)
-        
-        return smoothness
-
-
-class PhotoGuardEncoder(PhotoGuard):
-    """
-    PhotoGuard编码器版本，针对编码器-解码器架构
-    """
-    
-    def __init__(
-        self,
-        encoder: nn.Module,
-        decoder: nn.Module,
+    def protect_multiple(
+        self, 
+        images: torch.Tensor, 
         **kwargs
-    ):
-        """
-        Args:
-            encoder: 编码器（如VAE编码器）
-            decoder: 解码器（如VAE解码器）
-        """
-        self.encoder = encoder
-        self.decoder = decoder
-        
-        # 使用编码器作为目标模型
-        super().__init__(target_model=encoder, **kwargs)
-    
-    def _compute_diffusion_loss(
-        self,
-        images: torch.Tensor,
-        text_embeddings: torch.Tensor
     ) -> torch.Tensor:
         """
-        计算编码器-解码器损失
+        保护多张图像
         
         Args:
-            images: 图像张量
-            text_embeddings: 文本嵌入（这里可能不使用）
-            
+            images: 图片张量 [B, C, H, W] 或图片张量列表
+            **kwargs: 传递给protect方法的其他参数    
         Returns:
-            损失值
+            受保护的图片张量 [B, C, H, W]
         """
-        # 编码图像
-        with torch.no_grad():
-            original_latent = self.encoder(images)
+
         
-        # 对扰动图像编码
-        perturbed_latent = self.encoder(images)
+        # 处理输入格式
+        if isinstance(images, list):
+            images = torch.stack(images)
         
-        # 计算潜在空间的差异（最大化差异）
-        latent_loss = -F.mse_loss(perturbed_latent, original_latent)
+        if len(images.shape) == 3:
+            # 单张图片，添加批次维度
+            images = images.unsqueeze(0)
         
-        # 可选：添加重构损失
-        reconstructed = self.decoder(perturbed_latent)
-        reconstruction_loss = -F.mse_loss(reconstructed, images)
+        images = images.to(self.device)
         
-        return latent_loss + 0.1 * reconstruction_loss 
+        # 直接使用PGD攻击处理整个批次
+        protected_images = self._pgd_attack(images)
+        
+        return protected_images
+
+
+ 

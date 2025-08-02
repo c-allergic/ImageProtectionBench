@@ -28,7 +28,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="EditShield", 
+    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard"])
     
     # I2V model parameters
