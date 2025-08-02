@@ -3,436 +3,333 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, Optional, List
 import numpy as np
+import logging
 from .base import ProtectionBase
+from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
+from transformers import AutoTokenizer, PretrainedConfig
+import clip
+from scipy import signal
+import torchvision.transforms.functional as TF
+
+# 配置日志记录器
+logger = logging.getLogger(__name__)
 
 
 class EditShield(ProtectionBase):
     """
-    EditShield: 针对图像编辑的保护方法
-    基于论文: "EditShield: Protecting Unauthorized Image Editing by Instruction-guided Diffusion Models"
+    EditShield: 基于EOT攻击的图像保护方法
+    将EOT攻击算法转换为保护算法，生成相同的扰动来保护图像
+    支持多种变换：none（无变换）、center（中心裁剪）、gaussian（高斯模糊）、rotation（旋转）
     """
     
     def __init__(
         self,
-        feature_extractor: Optional[nn.Module] = None,
-        edit_detector: Optional[nn.Module] = None,
         protection_strength: float = 0.05,
-        semantic_threshold: float = 0.8,
-        frequency_weight: float = 0.3,
+        max_steps: int = 30,
+        beta: float = 0.1,
+        model_path: str = './models/protection/instruct-pix2pix-main/diffuser_cache',
+        cop_path: str = './models/protection/instruct-pix2pix-main/cop_file',
+        transform_type: str = "none",  # "none", "center", "gaussian", "rotation"
         **kwargs
     ):
         """
         Args:
-            feature_extractor: 特征提取器（如CLIP，可选）
-            edit_detector: 编辑检测器
             protection_strength: 保护强度
-            semantic_threshold: 语义相似性阈值
-            frequency_weight: 频域权重
+            max_steps: 优化步数
+            beta: 感知一致性权重
+            model_path: 模型缓存路径
+            cop_path: 模型文件路径
+            transform_type: 变换类型 ("none", "center", "gaussian", "rotation")
         """
-        self.feature_extractor = feature_extractor
-        self.edit_detector = edit_detector
         self.protection_strength = protection_strength
-        self.semantic_threshold = semantic_threshold
-        self.frequency_weight = frequency_weight
+        self.max_steps = max_steps
+        self.beta = beta
+        self.model_path = model_path
+        self.cop_path = cop_path
+        self.transform_type = transform_type
+        self.weight_dtype = torch.bfloat16
+        
         super().__init__(**kwargs)
     
     def _setup_model(self):
-        """设置模型"""
-        # 创建频域变换网络
-        self.freq_transform = FrequencyTransform().to(self.device)
+        """设置模型 - 加载InstructPix2Pix相关模型"""
+        model_id = "timbrooks/instruct-pix2pix"
+        revision = 'fp16'
         
-        # 创建语义保持网络
-        self.semantic_preserving = SemanticPreservingNet().to(self.device)
+        # 加载VAE
+        self.vae = AutoencoderKL.from_pretrained(
+            model_id, 
+            subfolder="vae", 
+            revision=revision, 
+            cache_dir=self.cop_path
+        ).to(self.device)
+        self.vae.requires_grad_(False)
+        self.vae.to(self.device, dtype=self.weight_dtype)
+        
+        # 加载噪声调度器
+        self.noise_scheduler = DDPMScheduler.from_pretrained(
+            model_id, 
+            subfolder="scheduler", 
+            cache_dir=self.cop_path
+        )
+        
+        # 加载CLIP模型用于特征提取
+        self.clip_model, _ = clip.load(
+            "./models/protection/instruct-pix2pix-main/clip-vit-large-patch14/ViT-L-14.pt", 
+            device="cpu", 
+            download_root="./"
+        )
+        self.clip_model.eval().requires_grad_(False)
+        
+        logger.info(f"EditShield模型加载完成，设备: {self.device}, 变换类型: {self.transform_type}")
     
-    def _extract_features(self, images: torch.Tensor) -> torch.Tensor:
+    def get_emb(self, img: torch.Tensor) -> torch.Tensor:
         """
-        提取图像特征
+        获取图像嵌入 - 从第一个EditShield复制
+        
+        Args:
+            img: 输入图像张量
+            
+        Returns:
+            嵌入张量
+        """
+        latents_1 = self.vae.encode(img.to(self.device, dtype=self.weight_dtype)).latent_dist.sample()
+        latents = latents_1 * self.vae.config.scaling_factor
+
+        # 采样噪声
+        noise = torch.randn_like(latents)
+        bsz = latents.shape[0]
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps, (bsz,), device=latents.device)
+        timesteps = timesteps.long()
+
+        # 添加噪声（前向扩散过程）
+        noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+
+        # 获取原始图像嵌入用于条件化
+        original_image_embeds = self.vae.encode(img.to(self.device, dtype=self.weight_dtype)).latent_dist.sample()
+
+        # 拼接噪声潜在表示和原始图像嵌入
+        concatenated_noisy_latents = torch.cat([noisy_latents, original_image_embeds], dim=1)
+        return concatenated_noisy_latents
+    
+    def perceptual_consistency_loss(self, perturbed_images: torch.Tensor, original_images: torch.Tensor) -> torch.Tensor:
+        """
+        感知一致性损失
+        
+        Args:
+            perturbed_images: 扰动图像
+            original_images: 原始图像
+            
+        Returns:
+            损失值
+        """
+        l2_norm = F.mse_loss(perturbed_images, original_images)
+        loss = self.beta * l2_norm
+        return loss
+    
+    def center_crop(self, images: torch.Tensor, new_height: int, new_width: int) -> torch.Tensor:
+        """
+        应用中心裁剪变换
+        
+        Args:
+            images: 输入图像张量
+            new_height: 新高度
+            new_width: 新宽度
+            
+        Returns:
+            裁剪后的图像
+        """
+        _, _, height, width = images.shape
+        startx = width // 2 - (new_width // 2)
+        starty = height // 2 - (new_height // 2)
+        endx = startx + new_width
+        endy = starty + new_height
+        return images[:, :, starty:endy, startx:endx]
+    
+    def gaussian_kernel(self, size: int, sigma: float) -> torch.Tensor:
+        """
+        生成高斯核
+        
+        Args:
+            size: 核大小
+            sigma: 标准差
+            
+        Returns:
+            高斯核张量
+        """
+        gkern1d = torch.from_numpy(np.outer(signal.gaussian(size, sigma), signal.gaussian(size, sigma)))
+        gkern2d = gkern1d.float().unsqueeze(0).unsqueeze(0)
+        return gkern2d
+    
+    def apply_gaussian_smoothing(self, input_tensor: torch.Tensor, kernel_size: int, sigma: float) -> torch.Tensor:
+        """
+        应用高斯平滑
+        
+        Args:
+            input_tensor: 输入张量
+            kernel_size: 核大小
+            sigma: 标准差
+            
+        Returns:
+            平滑后的张量
+        """
+        kernel = self.gaussian_kernel(kernel_size, sigma)
+        smoothed_channels = []
+        for c in range(input_tensor.shape[1]):
+            channel = input_tensor[:, c:c + 1, :, :]
+            padding = kernel_size // 2
+            smoothed_channel = F.conv2d(channel, kernel, padding=padding)
+            smoothed_channels.append(smoothed_channel)
+        smoothed = torch.cat(smoothed_channels, dim=1)
+        return smoothed
+    
+    def apply_transform(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        根据变换类型应用相应的变换 - 与原始代码保持一致
         
         Args:
             images: 输入图像张量
             
         Returns:
-            特征张量
+            变换后的图像
         """
-        if self.feature_extractor is not None:
-            return self.feature_extractor(images)
+        if self.transform_type == "none":
+            # 无变换，直接返回原图像
+            return images
+        
+        elif self.transform_type == "center":
+            resolution = min(images.size(2), images.size(3))
+            return self.center_crop(images, resolution, resolution)
+        
+        elif self.transform_type == "gaussian":
+            kernel_size = 5
+            sigma = 1.5
+            gaussian_data = self.apply_gaussian_smoothing(images, kernel_size, sigma)
+            return torch.clamp(gaussian_data, min=0, max=1)
+        
+        elif self.transform_type == "rotation":
+            angle = 5
+            if images.dim() == 3:
+                images = images.unsqueeze(0)
+                was_batch = False
+            else:
+                was_batch = True
+
+            rotated_images = torch.stack([TF.rotate(img, angle) for img in images])
+            if not was_batch:
+                rotated_images = rotated_images.squeeze(0)
+            
+            return rotated_images
+        
         else:
-            # 简化的特征提取：使用平均池化
-            return F.adaptive_avg_pool2d(images, (1, 1)).flatten(1)
+            raise ValueError(f"不支持的变换类型: {self.transform_type}")
+    
+    def _apply_eot_protection(self, images: torch.Tensor) -> torch.Tensor:
+        """
+        应用EOT保护 - 基于第一个EditShield的攻击算法
+        
+        Args:
+            images: 输入图像张量 [B, C, H, W]
+            
+        Returns:
+            受保护的图像张量 [B, C, H, W]
+        """
+        batch_size = images.shape[0]
+        protected_images = []
+        
+        for i in range(batch_size):
+            single_image = images[i:i+1]  # [1, C, H, W]
+            
+            # 应用变换（根据transform_type）
+            perturbed_data = self.apply_transform(single_image)
+            
+            # 保存原始数据
+            original_data = perturbed_data.clone()
+            
+            # 初始化对抗样本
+            perturbed_images_single = perturbed_data.detach().clone()
+            
+            # 获取目标嵌入（未变换的原始图像）
+            tgt_data = single_image.clone()
+            tgt_emb = self.get_emb(tgt_data).detach().clone()
+            
+            # 设置优化器
+            optimizer = torch.optim.Adam([perturbed_images_single])
+            
+            # EOT攻击迭代（转换为保护）
+            for step in range(self.max_steps):
+                perturbed_images_single.requires_grad = True
+                img_emb = self.get_emb(perturbed_images_single)
+                optimizer.zero_grad()
+                
+                # 损失函数计算（与攻击相同，但用于保护）
+                loss_perceptual = self.perceptual_consistency_loss(perturbed_images_single, original_data)
+                loss_mse = -F.mse_loss(img_emb.float(), tgt_emb.float())  # 最大化嵌入空间差异
+                
+                # 对于高斯模糊变换，添加额外的平滑损失
+                if self.transform_type == "gaussian":
+                    kernel_size = 5
+                    sigma = 1.5
+                    gaussian_data = self.apply_gaussian_smoothing(original_data, kernel_size, sigma)
+                    loss_smooth = F.mse_loss(
+                        self.apply_gaussian_smoothing(perturbed_images_single, kernel_size, sigma), 
+                        gaussian_data
+                    )
+                    total_loss = loss_mse + 0.1 * loss_smooth + loss_perceptual
+                else:
+                    total_loss = loss_mse + loss_perceptual
+                
+                total_loss.backward()
+                optimizer.step()
+            
+            # 获取最终的受保护图像
+            protected_single = perturbed_images_single.detach()
+            protected_images.append(protected_single)
+        
+        return torch.cat(protected_images, dim=0)
     
     def protect(
         self,
         image: torch.Tensor,
-        edit_instructions: Optional[str] = None,
         **kwargs
     ) -> torch.Tensor:
         """
         使用EditShield保护单张图像
         
         Args:
-            image: 输入图像张量 [C, H, W]
-            edit_instructions: 编辑指令（可选）
+            image: 输入图像张量 [C, H, W]，范围[0,1]
             **kwargs: 其他参数
             
         Returns:
-            受保护的图像张量 [C, H, W]
+            受保护的图像张量 [C, H, W]，范围[0,1]
         """
+        # 确保图像在正确设备上
         image = image.to(self.device)
         
         # 添加批次维度进行处理
         images = image.unsqueeze(0)  # [1, C, H, W]
         
-        # 提取原始特征
-        original_features = self._extract_features(images)
+        # 应用EOT保护
+        protected_images = self._apply_eot_protection(images)
         
-        # 应用多层保护
-        edit_instructions_list = [edit_instructions] if edit_instructions else None
-        protected_images = self._apply_multi_layer_protection(
-            images, 
-            original_features,
-            edit_instructions_list
-        )
+        # 移除批次维度并确保范围在[0,1]
+        protected_image = protected_images.squeeze(0)
+        protected_image = torch.clamp(protected_image, 0, 1)
         
-        # 移除批次维度
-        return protected_images.squeeze(0)
+        return protected_image
     
-    def _apply_multi_layer_protection(
-        self,
-        images: torch.Tensor,
-        original_features: torch.Tensor,
-        edit_instructions: Optional[List[str]] = None
-    ) -> torch.Tensor:
+    def get_protection_info(self) -> Dict[str, Any]:
         """
-        应用多层保护机制
+        获取保护信息
         
-        Args:
-            images: 输入图像
-            original_features: 原始特征
-            edit_instructions: 编辑指令
-            
         Returns:
-            受保护的图像
+            保护算法信息字典
         """
-        # 1. 频域保护
-        freq_protected = self._apply_frequency_protection(images)
-        
-        # 2. 语义保护
-        semantic_protected = self._apply_semantic_protection(
-            freq_protected, 
-            original_features
-        )
-        
-        # 3. 编辑特定保护
-        if edit_instructions:
-            edit_protected = self._apply_edit_specific_protection(
-                semantic_protected,
-                edit_instructions
-            )
-        else:
-            edit_protected = semantic_protected
-        
-        # 4. 自适应强度调整
-        final_protected = self._adaptive_strength_adjustment(
-            images,
-            edit_protected,
-            original_features
-        )
-        
-        return final_protected
-    
-    def _apply_frequency_protection(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        应用频域保护
-        
-        Args:
-            images: 输入图像
-            
-        Returns:
-            频域保护后的图像
-        """
-        # 转换到频域
-        freq_images = self.freq_transform.to_frequency(images)
-        
-        # 在频域添加保护性扰动
-        protection_mask = self._generate_frequency_mask(freq_images)
-        protected_freq = freq_images + protection_mask * self.frequency_weight
-        
-        # 转换回空域
-        protected_images = self.freq_transform.to_spatial(protected_freq)
-        
-        return torch.clamp(protected_images, 0, 1)
-    
-    def _generate_frequency_mask(self, freq_images: torch.Tensor) -> torch.Tensor:
-        """
-        生成频域保护掩码
-        
-        Args:
-            freq_images: 频域图像
-            
-        Returns:
-            频域掩码
-        """
-        batch_size, channels, height, width = freq_images.shape
-        
-        # 生成高频和中频区域的扰动
-        mask = torch.zeros_like(freq_images)
-        
-        # 高频区域（边缘）
-        h_center, w_center = height // 2, width // 2
-        high_freq_region = (
-            (torch.arange(height).view(-1, 1) - h_center) ** 2 +
-            (torch.arange(width).view(1, -1) - w_center) ** 2
-        ) > (min(height, width) // 4) ** 2
-        
-        # 在高频区域添加扰动
-        mask[:, :, high_freq_region] = torch.randn_like(
-            mask[:, :, high_freq_region]
-        ) * 0.1
-        
-        return mask.to(self.device)
-    
-    def _apply_semantic_protection(
-        self,
-        images: torch.Tensor,
-        original_features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        应用语义保护
-        
-        Args:
-            images: 输入图像
-            original_features: 原始特征
-            
-        Returns:
-            语义保护后的图像
-        """
-        # 使用语义保持网络
-        preserved_images = self.semantic_preserving(images, original_features)
-        
-        # 计算语义相似性
-        current_features = self._extract_features(preserved_images)
-        similarity = F.cosine_similarity(
-            original_features.flatten(1),
-            current_features.flatten(1),
-            dim=1
-        )
-        
-        # 如果语义相似性太低，减少保护强度
-        low_similarity_mask = similarity < self.semantic_threshold
-        if low_similarity_mask.any():
-            # 对相似性低的样本应用更温和的保护
-            gentle_protection = 0.5 * (images + preserved_images)
-            preserved_images[low_similarity_mask] = gentle_protection[low_similarity_mask]
-        
-        return preserved_images
-    
-    def _apply_edit_specific_protection(
-        self,
-        images: torch.Tensor,
-        edit_instructions: List[str]
-    ) -> torch.Tensor:
-        """
-        应用编辑特定保护
-        
-        Args:
-            images: 输入图像
-            edit_instructions: 编辑指令
-            
-        Returns:
-            编辑特定保护后的图像
-        """
-        if self.edit_detector is None:
-            return images
-        
-        # 分析编辑指令
-        edit_features = self._analyze_edit_instructions(edit_instructions)
-        
-        # 生成针对性保护
-        targeted_protection = self._generate_targeted_protection(
-            images,
-            edit_features
-        )
-        
-        return images + targeted_protection
-    
-    def _analyze_edit_instructions(self, instructions: List[str]) -> torch.Tensor:
-        """
-        分析编辑指令
-        
-        Args:
-            instructions: 编辑指令列表
-            
-        Returns:
-            编辑特征张量
-        """
-        # 这里应该使用文本编码器分析指令
-        # 为演示目的，返回随机特征
-        batch_size = len(instructions)
-        feature_dim = 512
-        
-        edit_features = torch.randn(batch_size, feature_dim, device=self.device)
-        
-        return edit_features
-    
-    def _generate_targeted_protection(
-        self,
-        images: torch.Tensor,
-        edit_features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        生成针对性保护
-        
-        Args:
-            images: 输入图像
-            edit_features: 编辑特征
-            
-        Returns:
-            针对性保护扰动
-        """
-        # 根据编辑类型生成不同的保护模式
-        protection_strength = 0.02
-        
-        # 生成空间自适应扰动
-        spatial_weights = self._compute_spatial_weights(images)
-        
-        # 生成保护扰动
-        noise = torch.randn_like(images) * protection_strength
-        weighted_noise = noise * spatial_weights.unsqueeze(1)
-        
-        return weighted_noise
-    
-    def _compute_spatial_weights(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        计算空间权重
-        
-        Args:
-            images: 输入图像
-            
-        Returns:
-            空间权重张量
-        """
-        # 计算图像梯度作为重要性权重
-        grad_x = torch.abs(images[:, :, 1:, :] - images[:, :, :-1, :])
-        grad_y = torch.abs(images[:, :, :, 1:] - images[:, :, :, :-1])
-        
-        # 填充梯度以匹配原始图像尺寸
-        grad_x = F.pad(grad_x, (0, 0, 0, 1), mode='replicate')
-        grad_y = F.pad(grad_y, (0, 1, 0, 0), mode='replicate')
-        
-        # 计算总梯度强度
-        gradient_strength = torch.mean(grad_x + grad_y, dim=1)
-        
-        # 归一化权重
-        weights = gradient_strength / (gradient_strength.max(dim=-1, keepdim=True)[0].max(dim=-1, keepdim=True)[0] + 1e-8)
-        
-        return weights
-    
-    def _adaptive_strength_adjustment(
-        self,
-        original_images: torch.Tensor,
-        protected_images: torch.Tensor,
-        original_features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        自适应强度调整
-        
-        Args:
-            original_images: 原始图像
-            protected_images: 保护后图像
-            original_features: 原始特征
-            
-        Returns:
-            调整后的保护图像
-        """
-        # 计算当前保护强度
-        current_perturbation = torch.mean(
-            torch.abs(protected_images - original_images),
-            dim=[1, 2, 3]
-        )
-        
-        # 计算语义保持度
-        protected_features = self._extract_features(protected_images)
-        semantic_similarity = F.cosine_similarity(
-            original_features.flatten(1),
-            protected_features.flatten(1),
-            dim=1
-        )
-        
-        # 自适应调整
-        adjustment_factor = torch.where(
-            semantic_similarity < self.semantic_threshold,
-            0.5,  # 减少保护强度
-            torch.where(
-                current_perturbation < 0.01,
-                1.2,  # 增加保护强度
-                1.0   # 保持当前强度
-            )
-        )
-        
-        # 应用调整
-        adjusted_perturbation = (protected_images - original_images) * adjustment_factor.view(-1, 1, 1, 1)
-        adjusted_images = original_images + adjusted_perturbation
-        
-        return torch.clamp(adjusted_images, 0, 1)
-
-
-class FrequencyTransform(nn.Module):
-    """频域变换模块"""
-    
-    def __init__(self):
-        super().__init__()
-    
-    def to_frequency(self, images: torch.Tensor) -> torch.Tensor:
-        """转换到频域"""
-        # 使用FFT转换到频域
-        freq_images = torch.fft.fft2(images, dim=(-2, -1))
-        return freq_images
-    
-    def to_spatial(self, freq_images: torch.Tensor) -> torch.Tensor:
-        """转换到空域"""
-        # 使用IFFT转换回空域
-        spatial_images = torch.fft.ifft2(freq_images, dim=(-2, -1)).real
-        return spatial_images
-
-
-class SemanticPreservingNet(nn.Module):
-    """语义保持网络"""
-    
-    def __init__(self, input_dim: int = 3, hidden_dim: int = 64):
-        super().__init__()
-        
-        self.conv1 = nn.Conv2d(input_dim, hidden_dim, 3, padding=1)
-        self.conv2 = nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1)
-        self.conv3 = nn.Conv2d(hidden_dim, input_dim, 3, padding=1)
-        
-        self.feature_proj = nn.Linear(512, hidden_dim)  # 假设特征维度为512
-        
-    def forward(
-        self,
-        images: torch.Tensor,
-        features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Args:
-            images: 输入图像 [B, C, H, W]
-            features: 语义特征 [B, D]
-            
-        Returns:
-            语义保持的图像
-        """
-        # 处理图像
-        x = F.relu(self.conv1(images))
-        x = F.relu(self.conv2(x))
-        
-        # 融合语义特征
-        projected_features = self.feature_proj(features)  # [B, hidden_dim]
-        feature_map = projected_features.view(-1, projected_features.size(1), 1, 1)
-        feature_map = feature_map.expand(-1, -1, x.size(2), x.size(3))
-        
-        # 特征融合
-        x = x + feature_map
-        
-        # 输出
-        output = torch.sigmoid(self.conv3(x))
-        
-        return output 
+        return {
+            "method": f"EditShield-EOT-{self.transform_type}",
+            "protection_strength": self.protection_strength,
+            "max_steps": self.max_steps,
+            "beta": self.beta,
+            "transform_type": self.transform_type,
+            "description": f"基于EOT攻击算法的图像保护方法，使用{self.transform_type}变换，通过生成相同的扰动来保护图像"
+        }
