@@ -165,4 +165,5 @@ Thumbs.db
 *.temp
 
 # Weights files
-models/protection/instruct-pix2pix-main/ 
+models/protection/instruct-pix2pix-main/
+models/ldm/stable-diffusion-v1/model.ckpt 
