@@ -166,4 +166,5 @@ Thumbs.db
 
 # Weights files
 models/protection/instruct-pix2pix-main/
-models/ldm/stable-diffusion-v1/model.ckpt 
+models/ldm/stable-diffusion-v1/model.ckpt
+checkpoints/ 

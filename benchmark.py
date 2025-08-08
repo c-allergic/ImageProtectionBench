@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -15,7 +15,7 @@ import json
 import torch
 
 from data import load_dataset, DATASETS
-from models.protection import PhotoGuard, EditShield, Mist, I2VGuard
+from models.protection import PhotoGuard, EditShield, Mist, I2VGuard,VGMShield
 from models.i2v import WANModel, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, TimeMetric, LPIPSMetric
 from experiment_utils import setup_output_directories, run_benchmark
@@ -28,8 +28,8 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="Mist", 
-                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard"])
+    parser.add_argument('--protection_method', type=str, default="VGMShield", 
+                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard","VGMShield"])
     
     # I2V model parameters
     parser.add_argument('--i2v_model', type=str, default="Skyreel", 
@@ -76,6 +76,8 @@ if __name__ == '__main__':
         protection_method = Mist(device=device)
     elif args.protection_method == "I2VGuard":
         protection_method = I2VGuard(device=device)
+    elif args.protection_method == "VGMShield":
+        protection_method = VGMShield(device=device)
     else:
         raise ValueError(f"Unknown protection method: {args.protection_method}")
     
