@@ -79,8 +79,111 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
     print(f"视频评估完成，总共获得 {len(results)} 个结果")
     return results
 
-def save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model):
-    """保存图片和视频"""
+
+
+
+def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
+    """Run benchmark for a single protection method"""
+    device = args.device
+    batch_size = 10  # 每10个图片进行一次处理，避免显存爆炸
+    
+    print(f"Running benchmark with {protection_method.__class__.__name__}")
+    print(f"使用批次处理模式，每批处理 {batch_size} 个图片")
+    
+    # Prepare data
+    images = data[:args.num_samples]
+    total_images = len(images)
+    
+    # 累积所有批次的结果
+    all_image_results = []
+    all_video_results = []
+    
+    # 分批处理
+    for i in range(0, total_images, batch_size):
+        batch_end = min(i + batch_size, total_images)
+        batch_images = images[i:batch_end]
+        batch_num = i // batch_size + 1
+        
+        print(f"\n=== 处理批次 {batch_num} ({i+1}-{batch_end}) ===")
+        
+        # Step 1: Apply protection
+        print("Applying protection...")
+        original_tensors = []
+        for img_pil in batch_images:
+            img_tensor = transform(img_pil).to(device)
+            original_tensors.append(img_tensor)
+        original_tensors = torch.stack(original_tensors)
+        
+        protected_tensors = protection_method.protect_multiple(original_tensors)
+
+        # Step 2: Generate videos
+        print("Generating videos...")
+        original_videos = i2v_model.generate_video(original_tensors)
+        protected_videos = i2v_model.generate_video(protected_tensors)
+        
+        # Step 3: Save images and videos
+        print("保存图片和视频...")
+        video_paths = save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model, i)
+        
+        # Step 4: Evaluate
+        print("Evaluating results...")
+        image_results = evaluate_images(original_tensors, protected_tensors, metrics, protection_method)
+        video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos)
+        
+        # 保存批次结果
+        all_image_results.append(image_results)
+        all_video_results.append(video_results)
+        
+        # 清理显存
+        del original_tensors, protected_tensors, original_videos, protected_videos
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        print(f"批次 {batch_num} 完成")
+    
+    # 聚合所有批次结果
+    print("\n聚合结果...")
+    final_results = {}
+    
+    # 聚合图片和视频结果
+    for batch_results in all_image_results + all_video_results:
+        for key, value in batch_results.items():
+            if key not in final_results:
+                final_results[key] = []
+            final_results[key].append(value)
+    
+    # 计算平均值
+    aggregated = {}
+    for key, values in final_results.items():
+        if key in ['total_protection_time', 'total_images_processed']:
+            # 时间和图片数量需要累加
+            aggregated[key] = sum(values)
+        elif all(isinstance(v, (int, float)) for v in values):
+            # 其他数值取平均
+            aggregated[key] = sum(values) / len(values)
+        else:
+            aggregated[key] = values
+    
+    # 重新计算 images_per_second
+    if 'total_protection_time' in aggregated and 'total_images_processed' in aggregated:
+        total_time = aggregated['total_protection_time']
+        total_images = aggregated['total_images_processed']
+        if total_time > 0:
+            aggregated['images_per_second'] = total_images / total_time
+    
+    return {
+        'method': protection_method.__class__.__name__,
+        'time': {
+            'total_protection_time': aggregated.get('total_protection_time'),
+            'total_images_processed': aggregated.get('total_images_processed'),
+            'images_per_second': aggregated.get('images_per_second')
+        },
+        'aggregated': {k: v for k, v in aggregated.items() 
+                      if k not in ['total_protection_time', 'total_images_processed', 'images_per_second']}
+    }
+
+def save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model, batch_start):
+    """保存单个批次的图片和视频"""
     # 使用实验目录的上级目录作为基础路径
     experiment_dir = os.path.dirname(save_path)
     images_dir = os.path.join(experiment_dir, "images")
@@ -88,44 +191,45 @@ def save_images_and_videos(original_tensors, protected_tensors, original_videos,
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(videos_dir, exist_ok=True)
     
+    batch_size = original_tensors.size(0)
+    
     # 保存图片
-    print(f"保存图片到: {images_dir}")
-    for i in range(original_tensors.size(0)):
+    print(f"保存批次图片到: {images_dir}")
+    for i in range(batch_size):
+        global_idx = batch_start + i
         # 保存原始图片
         orig_pil = pt_to_pil(original_tensors[i])
-        orig_path = os.path.join(images_dir, f"original_{i:03d}.png")
+        orig_path = os.path.join(images_dir, f"original_{global_idx:03d}.png")
         orig_pil.save(orig_path)
         
         # 保存保护后的图片
         prot_pil = pt_to_pil(protected_tensors[i])
-        prot_path = os.path.join(images_dir, f"protected_{i:03d}.png")
+        prot_path = os.path.join(images_dir, f"protected_{global_idx:03d}.png")
         prot_pil.save(prot_path)
         
-        print(f"  图片 {i}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}")
+        print(f"  图片 {global_idx}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}")
     
-    # 保存视频 - 使用diffusers的export_to_video方法
-    print(f"保存视频到: {videos_dir}")
-    
-    # 处理批次视频格式 [B, T, C, H, W] -> 单个视频 [T, C, H, W]
-    batch_size = original_videos.size(0)
+    # 保存视频
+    print(f"保存批次视频到: {videos_dir}")
     video_paths = []
     for i in range(batch_size):
+        global_idx = batch_start + i
         # 提取单个视频
-        orig_frames = pt_to_pil(original_videos[i],video=True)
-        prot_frames = pt_to_pil(protected_videos[i],video=True)
+        orig_frames = pt_to_pil(original_videos[i], video=True)
+        prot_frames = pt_to_pil(protected_videos[i], video=True)
         
         # 调试信息
         expected_duration = len(orig_frames) / i2v_model.frame_rate
-        print(f"  视频 {i}: {len(orig_frames)}帧, {i2v_model.frame_rate}fps, 预期时长: {expected_duration:.2f}秒")
+        print(f"  视频 {global_idx}: {len(orig_frames)}帧, {i2v_model.frame_rate}fps, 预期时长: {expected_duration:.2f}秒")
         
         # 使用diffusers的export_to_video方法
-        orig_video_path = os.path.join(videos_dir, f"original_{i:03d}.mp4")
-        prot_video_path = os.path.join(videos_dir, f"protected_{i:03d}.mp4")
+        orig_video_path = os.path.join(videos_dir, f"original_{global_idx:03d}.mp4")
+        prot_video_path = os.path.join(videos_dir, f"protected_{global_idx:03d}.mp4")
         
         export_to_video(orig_frames, orig_video_path)
         export_to_video(prot_frames, prot_video_path)
         
-        print(f"  视频 {i}: {os.path.basename(orig_video_path)} & {os.path.basename(prot_video_path)}")
+        print(f"  视频 {global_idx}: {os.path.basename(orig_video_path)} & {os.path.basename(prot_video_path)}")
         video_paths.append({
             'original_path': orig_video_path,
             'protected_path': prot_video_path
@@ -133,61 +237,76 @@ def save_images_and_videos(original_tensors, protected_tensors, original_videos,
     
     return video_paths
 
-
-def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
-    """Run benchmark for a single protection method"""
-    device = args.device
-    
-    print(f"Running benchmark with {protection_method.__class__.__name__}")
-    
-    # Prepare data
-    images = data[:args.num_samples]
-    
-    # Step 1: Apply protection
-    print("Applying protection...")
-    # transform the original images to tensors
-    original_tensors = []
-    for img_pil in images:
-        img_tensor = transform(img_pil).to(device)
-        original_tensors.append(img_tensor)
-    original_tensors = torch.stack(original_tensors)
-    
-    # protect the original tensors
-    print(f"使用批量处理, 批次大小: {len(images)}")
-    protected_tensors = protection_method.protect_multiple(original_tensors)
-
-    # Step 2: Generate videos
-    print("Generating videos...")
-    original_videos = i2v_model.generate_video(original_tensors)
-    protected_videos = i2v_model.generate_video(protected_tensors)
-    
-    # Step 3: Save images and videos first
-    print("保存图片和视频...")
-    video_paths = save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model)
-    
-    # Step 4: Evaluate using saved files to reduce IO pressure
-    print("Evaluating results...")
-    image_results = evaluate_images(original_tensors, protected_tensors, metrics, protection_method)
-    video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos)
-    
-    # Combine and aggregate results
-    all_results = {**image_results, **video_results}
-    
-    # Results are now already aggregated, so we don't need to compute averages
-    # Just rename the keys to maintain compatibility
+def aggregate_batch_results(all_image_results, all_video_results):
+    """聚合所有批次的结果"""
     aggregated = {}
-    for key, value in all_results.items():
-        # Skip timing-related keys as they are handled separately
-        if key not in ['total_protection_time', 'total_images_processed', 'images_per_second']:
-            aggregated[key] = value
     
-    return {
-        'method': protection_method.__class__.__name__,
-        'time': {
-            'total_protection_time': all_results.get('total_protection_time'),
-            'total_images_processed': all_results.get('total_images_processed'),
-            'images_per_second': all_results.get('images_per_second')
-        },
-        'aggregated': aggregated
-    } 
+    # 聚合图片结果
+    for batch_results in all_image_results:
+        for key, value in batch_results.items():
+            if key not in aggregated:
+                aggregated[key] = []
+            if isinstance(value, (int, float)):
+                aggregated[key].append(value)
+            elif isinstance(value, dict):
+                # 处理嵌套字典的情况
+                if key not in aggregated:
+                    aggregated[key] = {}
+                for sub_key, sub_value in value.items():
+                    if sub_key not in aggregated[key]:
+                        aggregated[key][sub_key] = []
+                    aggregated[key][sub_key].append(sub_value)
+    
+    # 聚合视频结果
+    for batch_results in all_video_results:
+        for key, value in batch_results.items():
+            if key not in aggregated:
+                aggregated[key] = []
+            if isinstance(value, (int, float)):
+                aggregated[key].append(value)
+            elif isinstance(value, dict):
+                # 处理嵌套字典的情况
+                if key not in aggregated:
+                    aggregated[key] = {}
+                for sub_key, sub_value in value.items():
+                    if sub_key not in aggregated[key]:
+                        aggregated[key][sub_key] = []
+                    aggregated[key][sub_key].append(sub_value)
+    
+    # 计算最终结果（时间相关指标需要累加，其他指标计算平均值）
+    final_results = {}
+    # 需要累加的时间相关指标
+    cumulative_keys = {'total_protection_time', 'total_images_processed'}
+    
+    for key, value_list in aggregated.items():
+        if isinstance(value_list, list) and value_list:
+            if all(isinstance(v, (int, float)) for v in value_list):
+                if key in cumulative_keys:
+                    final_results[key] = sum(value_list)  # 累加
+                else:
+                    final_results[key] = np.mean(value_list)  # 平均
+            else:
+                final_results[key] = value_list
+        elif isinstance(value_list, dict):
+            final_results[key] = {}
+            for sub_key, sub_value_list in value_list.items():
+                if isinstance(sub_value_list, list) and sub_value_list:
+                    if all(isinstance(v, (int, float)) for v in sub_value_list):
+                        if sub_key in cumulative_keys:
+                            final_results[key][sub_key] = sum(sub_value_list)  # 累加
+                        else:
+                            final_results[key][sub_key] = np.mean(sub_value_list)  # 平均
+                    else:
+                        final_results[key][sub_key] = sub_value_list
+        else:
+            final_results[key] = value_list
+    
+    # 重新计算 images_per_second (需要使用累加后的总时间和总图片数)
+    if 'total_protection_time' in final_results and 'total_images_processed' in final_results:
+        total_time = final_results['total_protection_time']
+        total_images = final_results['total_images_processed']
+        if total_time > 0:
+            final_results['images_per_second'] = total_images / total_time
+    
+    return final_results 
     
