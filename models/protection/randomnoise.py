@@ -73,43 +73,6 @@ class RandomNoise(ProtectionBase):
         
         return protected_image
     
-    @timeit
-    def protect_multiple(
-        self, 
-        images: Union[torch.Tensor, List[torch.Tensor]], 
-        **kwargs
-    ) -> torch.Tensor:
-        """
-        批量保护多张图像
-        
-        Args:
-            images: 图像张量 [B, C, H, W] 或图像张量列表
-            **kwargs: 传递给protect方法的其他参数
-            
-        Returns:
-            受保护的图像张量 [B, C, H, W]
-        """
-        # 处理输入格式
-        if isinstance(images, list):
-            images = torch.stack(images)
-        
-        if len(images.shape) == 3:
-            # 单张图片，添加批次维度
-            images = images.unsqueeze(0)
-        
-        images = images.to(self.device)
-        
-        # 批量生成噪声（更高效）
-        noise = torch.empty_like(images).uniform_(-self.eps, self.eps)
-        
-        # 批量添加噪声
-        noisy_images = images + noise
-        
-        # 确保输出在有效范围[0,1]内
-        protected_images = torch.clamp(noisy_images, 0.0, 1.0)
-        
-        return protected_images
-    
     def __repr__(self):
         return (f"RandomNoise(eps={self.eps:.6f}, "
                 f"eps_8bit={self.eps*255:.1f}, "
