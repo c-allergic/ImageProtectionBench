@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from .base import ProtectionBase, timeit
+from .base import ProtectionBase
 from typing import Union, List
 
 

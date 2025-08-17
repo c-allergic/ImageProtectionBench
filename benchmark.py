@@ -17,7 +17,7 @@ import torch
 from data import load_dataset, DATASETS
 from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
 from models.i2v import WANModel, LTXModel, SkyreelModel
-from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, TimeMetric, LPIPSMetric
+from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
 from experiment_utils import setup_output_directories, run_benchmark
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
@@ -97,6 +97,8 @@ if __name__ == '__main__':
     # Initialize metrics
     print(f"Initializing metrics: {args.metrics}")
     metrics = {}
+    enable_timing = False 
+    
     for metric_name in args.metrics:
         if metric_name == "psnr":
             metrics[metric_name] = PSNRMetric(device=device)
@@ -107,7 +109,8 @@ if __name__ == '__main__':
         elif metric_name == "vbench":
             metrics[metric_name] = VBenchMetric(device=device)
         elif metric_name == "time":
-            metrics[metric_name] = TimeMetric(device=device)
+            enable_timing = True  # 启用时间测量，但不创建TimeMetric对象
+            print("时间测量已启用")
         elif metric_name == "lpips":
             metrics[metric_name] = LPIPSMetric(device=device)
         else:
@@ -115,7 +118,7 @@ if __name__ == '__main__':
     
     # Run benchmark
     print("Starting main benchmark...")
-    results = run_benchmark(args, data, protection_method, i2v_model, metrics, save_path)
+    results = run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing)
     
     # Save results
     results_file = os.path.join(save_path, "benchmark_results.json")

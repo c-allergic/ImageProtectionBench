@@ -7,7 +7,7 @@ from .base import ProtectionBase
 
 
 class I2VGuard(ProtectionBase):
-    """
+    """ 
     I2VGuard: 专门针对图像到视频模型的保护算法
     结合时序一致性和运动模式干扰
     """

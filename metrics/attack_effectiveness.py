@@ -131,7 +131,6 @@ class CLIPScoreMetric(EffectivenessMetric):
         all_scores = np.array(all_scores)
         return {
             "average_clip_score": float(np.mean(all_scores)),
-            "total_videos": len(all_scores)
             # "max_clip_score": float(np.max(all_scores)),
             # "min_clip_score": float(np.min(all_scores)),
             # "std_clip_score": float(np.std(all_scores))
