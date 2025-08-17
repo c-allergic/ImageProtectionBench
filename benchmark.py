@@ -24,11 +24,11 @@ if __name__ == '__main__':
     
     # Dataset parameters
     parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=100)
+    parser.add_argument('--num_samples', type=int, default=120)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="VGMShield", 
+    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
@@ -55,7 +55,10 @@ if __name__ == '__main__':
     print(f"Device: {device}")
     
     # Create output directory
-    output_dirs = setup_output_directories(args.output_dir, f"experiment_{start_time.strftime('%Y%m%d_%H%M%S')}")
+    output_dirs = setup_output_directories(
+        args.output_dir, 
+        f"{args.protection_method}_{start_time.strftime('%m%d')}"
+    )
     save_path = output_dirs['results']
     
     # Save arguments

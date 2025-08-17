@@ -217,8 +217,8 @@ class SkyreelModel(I2VModelBase):
             self.height, self.width = 544, 960
             
         # 设置SkyReels模型默认参数
-        kwargs.setdefault('frame_rate', 12)
-        kwargs.setdefault('num_frames', 37)
+        kwargs.setdefault('frame_rate', 14)
+        kwargs.setdefault('num_frames', 28)
         kwargs.setdefault('height', self.height)
         kwargs.setdefault('width', self.width)
         kwargs.setdefault('guidance_scale', 6.0)
