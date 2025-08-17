@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from pytorch_lightning import seed_everything
 from typing import Dict, Any, Optional, List, Union
-from .base import ProtectionBase, timeit
+from .base import ProtectionBase
 
 # 禁用SSL验证
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -364,8 +364,6 @@ class Mist(ProtectionBase):
         return save_adv
     
 
-    
-    @timeit
     def protect_multiple(
         self, 
         images: Union[torch.Tensor, List[torch.Tensor]], 

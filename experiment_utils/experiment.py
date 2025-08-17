@@ -11,7 +11,7 @@ from PIL import Image
 from data import transform, pt_to_pil
 from diffusers.utils import export_to_video
 
-def evaluate_images(original_images, protected_images, metrics, protection_method=None):
+def evaluate_images(original_images, protected_images, metrics):
     """Evaluate image quality"""
     results = {}    
     
@@ -22,10 +22,7 @@ def evaluate_images(original_images, protected_images, metrics, protection_metho
             if metric_result:
                 # Store aggregated statistics directly
                 for key, value in metric_result.items():
-                    results[f'image_{key}'] = value
-        elif metric_name == 'time' and protection_method is not None:
-            timing_stats = metric.compute(protection_method=protection_method)
-            results.update(timing_stats)
+                    results[f'{key}'] = value
     
     return results
 
@@ -46,7 +43,7 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
                 clip_result = metric.compute_multiple(original_videos, protected_videos)
                 if clip_result:
                     for key, value in clip_result.items():
-                        results[f'video_{key}'] = value
+                        results[f'{key}'] = value
                     print(f"CLIP评估完成，获得 {len(clip_result)} 个结果")
                 else:
                     print("CLIP评估返回空结果")
@@ -63,7 +60,7 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
                     metric_result = metric.compute_multiple(video_paths)
                     if metric_result:
                         for key, value in metric_result.items():
-                            results[f'video_{key}'] = value
+                            results[f'{key}'] = value
                         print(f"VBench评估完成，获得 {len(metric_result)} 个结果")
                     else:
                         print("VBench评估返回空结果")
@@ -79,10 +76,7 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
     print(f"视频评估完成，总共获得 {len(results)} 个结果")
     return results
 
-
-
-
-def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
+def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing=False):
     """Run benchmark for a single protection method"""
     device = args.device
     batch_size = 10  # 每10个图片进行一次处理，避免显存爆炸
@@ -97,6 +91,10 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
     # 累积所有批次的结果
     all_image_results = []
     all_video_results = []
+    
+    # 时间统计(仅在启用时使用)
+    total_protection_time = 0.0
+    total_images_processed = 0
     
     # 分批处理
     for i in range(0, total_images, batch_size):
@@ -114,7 +112,22 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
             original_tensors.append(img_tensor)
         original_tensors = torch.stack(original_tensors)
         
-        protected_tensors = protection_method.protect_multiple(original_tensors)
+        # 条件性计时保护操作
+        if enable_timing:
+            import time
+            start_time = time.time()
+            protected_tensors = protection_method.protect_multiple(original_tensors)
+            elapsed_time = time.time() - start_time
+            
+            # 累积时间统计
+            batch_size_actual = original_tensors.size(0)
+            total_protection_time += elapsed_time
+            total_images_processed += batch_size_actual
+            
+            print(f"保护操作完成: 处理 {batch_size_actual} 张图片，耗时 {elapsed_time:.4f}秒，平均 {elapsed_time/batch_size_actual:.4f}秒/图片")
+        else:
+            protected_tensors = protection_method.protect_multiple(original_tensors)
+            print("保护操作完成 (未启用时间测量)")
 
         # Step 2: Generate videos
         print("Generating videos...")
@@ -122,12 +135,13 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
         protected_videos = i2v_model.generate_video(protected_tensors)
         
         # Step 3: Save images and videos
-        print("保存图片和视频...")
+        print("Saving images and videos...")
         video_paths = save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model, i)
         
-        # Step 4: Evaluate
+        # Step 4: Evaluate (从metrics中过滤掉time)
         print("Evaluating results...")
-        image_results = evaluate_images(original_tensors, protected_tensors, metrics, protection_method)
+        image_metrics = {k: v for k, v in metrics.items() if v is not None}
+        image_results = evaluate_images(original_tensors, protected_tensors, image_metrics)
         video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos)
         
         # 保存批次结果
@@ -155,32 +169,36 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path):
     # 计算平均值
     aggregated = {}
     for key, values in final_results.items():
-        if key in ['total_protection_time', 'total_images_processed']:
-            # 时间和图片数量需要累加
-            aggregated[key] = sum(values)
-        elif all(isinstance(v, (int, float)) for v in values):
-            # 其他数值取平均
+        if all(isinstance(v, (int, float)) for v in values):
+            # 数值取平均
             aggregated[key] = sum(values) / len(values)
         else:
             aggregated[key] = values
     
-    # 重新计算 images_per_second
-    if 'total_protection_time' in aggregated and 'total_images_processed' in aggregated:
-        total_time = aggregated['total_protection_time']
-        total_images = aggregated['total_images_processed']
-        if total_time > 0:
-            aggregated['images_per_second'] = total_images / total_time
-    
-    return {
+    # 准备返回结果
+    result = {
         'method': protection_method.__class__.__name__,
-        'time': {
-            'total_protection_time': aggregated.get('total_protection_time'),
-            'total_images_processed': aggregated.get('total_images_processed'),
-            'images_per_second': aggregated.get('images_per_second')
-        },
-        'aggregated': {k: v for k, v in aggregated.items() 
-                      if k not in ['total_protection_time', 'total_images_processed', 'images_per_second']}
+        'aggregated': aggregated
     }
+    
+    # 只在启用时间测量时添加时间统计
+    if enable_timing:
+        images_per_second = total_images_processed / total_protection_time if total_protection_time > 0 else 0
+        
+        print(f"时间统计:")
+        print(f"  总保护时间: {total_protection_time:.4f}秒")
+        print(f"  处理图片总数: {total_images_processed}")
+        print(f"  处理速度: {images_per_second:.2f} 图片/秒")
+        
+        result['time'] = {
+            'total_protection_time': total_protection_time,
+            'total_images_processed': total_images_processed,
+            'images_per_second': images_per_second
+        }
+    else:
+        print("未启用时间测量")
+    
+    return result
 
 def save_images_and_videos(original_tensors, protected_tensors, original_videos, protected_videos, save_path, i2v_model, batch_start):
     """保存单个批次的图片和视频"""

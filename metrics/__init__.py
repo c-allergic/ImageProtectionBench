@@ -8,7 +8,7 @@ This module provides various metrics for evaluating image protection methods:
 - Timing metrics (TimeMetric, BatchTimingMetric, timeit decorator)
 """
 
-from .base import BaseMetric, ImageQualityMetric, VideoQualityMetric, EffectivenessMetric, TimeMetric
+from .base import BaseMetric, ImageQualityMetric, VideoQualityMetric, EffectivenessMetric
 from .image_quality import PSNRMetric, SSIMMetric, LPIPSMetric
 from .video_quality import VBenchMetric # , FVDMetric, TemporalConsistencyMetric
 from .attack_effectiveness import CLIPScoreMetric # , AttackSuccessRateMetric, ProtectionRobustnessMetric
@@ -20,7 +20,6 @@ __all__ = [
     'ImageQualityMetric',
     'VideoQualityMetric', 
     'EffectivenessMetric',
-    'TimeMetric',
     # Image quality metrics
     'PSNRMetric',
     'SSIMMetric', 

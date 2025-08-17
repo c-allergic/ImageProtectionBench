@@ -277,7 +277,7 @@ class LPIPSMetric(ImageQualityMetric):
             lpips_score = self.compute(orig_image, prot_image, **kwargs)
             lpips_scores.append(lpips_score)
         
-        # Aggregate results - 只保留average指标
+        # Aggregate results
         lpips_scores = np.array(lpips_scores)
         return {
             "average_lpips": float(np.mean(lpips_scores))

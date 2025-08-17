@@ -1,66 +1,6 @@
 from abc import ABC, abstractmethod
 import torch
 from typing import Union, List
-import time
-import logging
-from functools import wraps
-
-# 配置日志记录器
-logger = logging.getLogger(__name__)
-
-
-def timeit(func):
-    """
-    时间记录装饰器，用于记录保护算法的处理时间
-    
-    使用方式:
-        @timeit
-        def protect_batch(self, ...):
-            ...
-    """
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        start_time = time.time()
-        
-        # 获取图片数量 - 简化逻辑
-        num_images = 1
-        if args and hasattr(args[0], 'shape'):
-            # 如果第一个参数是tensor，获取批次大小
-            if len(args[0].shape) == 4:  # [B, C, H, W]
-                num_images = args[0].shape[0]
-            elif len(args[0].shape) == 3:  # [C, H, W]
-                num_images = 1
-        elif args and isinstance(args[0], (list, tuple)):
-            # 如果第一个参数是列表
-            num_images = len(args[0])
-        
-        # 执行函数
-        result = func(self, *args, **kwargs)
-        
-        # 计算耗时
-        elapsed_time = time.time() - start_time
-        
-        # 存储时间信息到对象属性中（用于TimeMetric）
-        if not hasattr(self, '_timing_records'):
-            self._timing_records = []
-        
-        self._timing_records.append({
-            'method': func.__name__,
-            'elapsed_time': elapsed_time,
-            'num_images': num_images,
-            'avg_time_per_image': elapsed_time / num_images if num_images > 0 else 0
-        })
-        
-        # 记录日志
-        logger.info(
-            f"[{self.__class__.__name__}] {func.__name__}: "
-            f"处理 {num_images} 张图片, "
-            f"耗时 {elapsed_time:.2f}s, "
-            f"平均 {elapsed_time/num_images:.3f}s/图片"
-        )
-        
-        return result
-    return wrapper
 
 
 class ProtectionBase(ABC):
@@ -80,8 +20,6 @@ class ProtectionBase(ABC):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.config = kwargs
         self._setup_model()
-        
-        logger.info(f"初始化 {self.__class__.__name__} 保护算法，设备: {self.device}")
     
     @abstractmethod
     def _setup_model(self):
@@ -105,7 +43,6 @@ class ProtectionBase(ABC):
         """
         pass
     
-    @timeit
     def protect_multiple(
         self, 
         images: Union[torch.Tensor, List[torch.Tensor]], 

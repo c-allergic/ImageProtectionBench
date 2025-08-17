@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
 from omegaconf import OmegaConf
-from .base import ProtectionBase, timeit
+from .base import ProtectionBase
 
 try:
     import lpips
@@ -351,7 +351,6 @@ class VGMShield(ProtectionBase):
         
         return image.squeeze(0)  # 移除批次维度，返回[C, H, W]
     
-    @timeit
     def protect_multiple(
         self, 
         images: Union[torch.Tensor, List[torch.Tensor]], 
