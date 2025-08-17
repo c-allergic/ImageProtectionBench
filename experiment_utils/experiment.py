@@ -183,17 +183,17 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, 
     
     # 只在启用时间测量时添加时间统计
     if enable_timing:
-        images_per_second = total_images_processed / total_protection_time if total_protection_time > 0 else 0
+        average_time_per_image = total_protection_time / total_images_processed if total_images_processed > 0 else 0
         
         print(f"时间统计:")
         print(f"  总保护时间: {total_protection_time:.4f}秒")
         print(f"  处理图片总数: {total_images_processed}")
-        print(f"  处理速度: {images_per_second:.2f} 图片/秒")
-        
+        print(f"  平均保护时间: {average_time_per_image:.4f}秒/图片")
+
         result['time'] = {
             'total_protection_time': total_protection_time,
             'total_images_processed': total_images_processed,
-            'images_per_second': images_per_second
+            'average_time_per_image': average_time_per_image
         }
     else:
         print("未启用时间测量")

@@ -34,7 +34,7 @@ if __name__ == '__main__':
     # I2V model parameters
     parser.add_argument('--i2v_model', type=str, default="Skyreel", 
                        choices=["LTX", "WAN", "Skyreel"])
-    parser.add_argument('--num_frames', type=int, default=49)
+    # parser.add_argument('--num_frames', type=int, default=49)
     
     # Evaluation parameters
     parser.add_argument('--metrics', nargs='+', default=["psnr", "ssim", "lpips", "clip","time","vbench"],
