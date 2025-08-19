@@ -178,13 +178,13 @@ class Mist(ProtectionBase):
         """
         Prepare the config and the model used for generating adversarial examples.
         """
-        # Set default paths
+        # Set default paths - 使用相对于当前工作目录的路径
         if config_path is None:
             config_path = 'configs/stable-diffusion/v1-inference-attack.yaml'
         if ckpt_path is None:
             ckpt_path = 'models/ldm/stable-diffusion-v1/model.ckpt'
         if target_image_path is None:
-            target_image_path = 'MIST.png'
+            target_image_path = os.path.join(os.path.dirname(__file__), 'MIST.png')
             
         self.config_path = config_path
         self.ckpt_path = ckpt_path
@@ -211,12 +211,10 @@ class Mist(ProtectionBase):
         seed_everything(self.seed)
         
         # Load configuration
-        config_path = os.path.join(os.getcwd(), self.config_path)
-        config = OmegaConf.load(config_path)
+        config = OmegaConf.load(self.config_path)
         
         # Load Stable Diffusion model
-        ckpt_path = os.path.join(os.getcwd(), self.ckpt_path)
-        model = self._load_model_from_config(config, ckpt_path)
+        model = self._load_model_from_config(config, self.ckpt_path)
         
         # Create identity loss function
         fn = IdentityLoss()
@@ -248,13 +246,6 @@ class Mist(ProtectionBase):
         Load model from the config and the ckpt path.
         """
         print(f"Loading model from {ckpt_path}")
-
-        # 如果本地模型文件不存在，直接使用diffusers加载
-        if not os.path.exists(ckpt_path):
-            from diffusers import StableDiffusionPipeline
-            pipeline = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)
-            pipeline.to(self.device)
-            return pipeline.unet
 
         pl_sd = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         if "global_step" in pl_sd:
