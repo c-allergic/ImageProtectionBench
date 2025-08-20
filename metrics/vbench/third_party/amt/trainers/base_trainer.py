@@ -46,7 +46,7 @@ class Trainer:
     def resume_training(self):
         ckpt_path = self.config.get('resume_state')
         if ckpt_path is not None:
-            ckpt = torch.load(self.config['resume_state'])
+            ckpt = torch.load(self.config['resume_state'], weights_only=False)
             if self.config['distributed']:
                 self.model.module.load_state_dict(ckpt['state_dict'])
             else:

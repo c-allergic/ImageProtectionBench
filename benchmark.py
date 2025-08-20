@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -28,13 +28,12 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
+    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
     parser.add_argument('--i2v_model', type=str, default="Skyreel", 
                        choices=["LTX", "WAN", "Skyreel"])
-    parser.add_argument('--num_frames', type=int, default=49)
     
     # Evaluation parameters
     parser.add_argument('--metrics', nargs='+', default=["psnr", "ssim", "lpips", "clip","time","vbench"],
@@ -57,7 +56,7 @@ if __name__ == '__main__':
     # Create output directory
     output_dirs = setup_output_directories(
         args.output_dir, 
-        f"{args.protection_method}_{start_time.strftime('%m%d')}"
+        f"{args.protection_method}_{start_time.strftime('%m%d_%H%M')}"
     )
     save_path = output_dirs['results']
     

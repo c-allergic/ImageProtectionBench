@@ -231,7 +231,7 @@ def clip_b16(
     )
     if pretrained:
         print('load pretrained weights')
-        state_dict = torch.load(_MODELS["ViT-B/16"], map_location='cpu')
+        state_dict = torch.load(_MODELS["ViT-B/16"], map_location='cpu', weights_only=False)
         load_state_dict(model, state_dict, input_resolution=input_resolution, patch_size=16, center=center)
     return model.eval()
 
@@ -252,7 +252,7 @@ def clip_l14(
     )
     if pretrained:
         print('load pretrained weights')
-        state_dict = torch.load(_MODELS["ViT-L/14"], map_location='cpu')
+        state_dict = torch.load(_MODELS["ViT-L/14"], map_location='cpu', weights_only=False)
         load_state_dict(model, state_dict, input_resolution=input_resolution, patch_size=14, center=center)
     return model.eval()
 
@@ -273,7 +273,7 @@ def clip_l14_336(
     )
     if pretrained:
         print('load pretrained weights')
-        state_dict = torch.load(_MODELS["ViT-L/14_336"], map_location='cpu')
+        state_dict = torch.load(_MODELS["ViT-L/14_336"], map_location='cpu', weights_only=False)
         load_state_dict(model, state_dict, input_resolution=input_resolution, patch_size=14, center=center)
     return model.eval()
 

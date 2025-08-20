@@ -351,22 +351,4 @@ class VGMShield(ProtectionBase):
         
         return image.squeeze(0)  # 移除批次维度，返回[C, H, W]
     
-    def protect_multiple(
-        self, 
-        images: Union[torch.Tensor, List[torch.Tensor]], 
-        target_image: Optional[torch.Tensor] = None,
-        **kwargs
-    ) -> torch.Tensor:
-        """
-        批量保护多张图像
-        
-        Args:
-            images: 图像张量 [B, C, H, W] 或图像张量列表
-            target_image: 目标图像张量 [C, H, W]（有目标攻击时使用）
-            **kwargs: 传递给protect方法的其他参数
-            
-        Returns:
-            受保护的图像张量 [B, C, H, W]
-        """
-        return super().protect_multiple(images, target_image=target_image, **kwargs)
 

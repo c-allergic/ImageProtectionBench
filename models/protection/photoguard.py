@@ -147,37 +147,6 @@ class PhotoGuard(ProtectionBase):
         # 确保最终张量不需要梯度, otherwise video benchmark will fail
         X_adv.detach_()
         return X_adv
-    
-    def protect_multiple(
-        self, 
-        images: torch.Tensor, 
-        **kwargs
-    ) -> torch.Tensor:
-        """
-        保护多张图像
-        
-        Args:
-            images: 图片张量 [B, C, H, W] 或图片张量列表
-            **kwargs: 传递给protect方法的其他参数    
-        Returns:
-            受保护的图片张量 [B, C, H, W]
-        """
-
-        
-        # 处理输入格式
-        if isinstance(images, list):
-            images = torch.stack(images)
-        
-        if len(images.shape) == 3:
-            # 单张图片，添加批次维度
-            images = images.unsqueeze(0)
-        
-        images = images.to(self.device)
-        
-        # 直接使用PGD攻击处理整个批次
-        protected_images = self._pgd_attack(images)
-        
-        return protected_images
 
 
  

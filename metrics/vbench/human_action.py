@@ -42,7 +42,7 @@ def build_dict():
 
 
 def human_action(umt_path, video_list, device):
-    state_dict = torch.load(umt_path, map_location='cpu')
+    state_dict = torch.load(umt_path, map_location='cpu', weights_only=False)
     model = create_model(
         "vit_large_patch16_224",
         pretrained=False,

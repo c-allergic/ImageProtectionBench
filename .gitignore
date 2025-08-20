@@ -168,3 +168,5 @@ Thumbs.db
 models/protection/instruct-pix2pix-main/
 models/ldm/stable-diffusion-v1/model.ckpt
 checkpoints/ 
+
+evaluation_results/

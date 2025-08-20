@@ -27,7 +27,7 @@ root = args.root
 network_cfg = OmegaConf.load(cfg_path).network
 network_name = network_cfg.name
 model = build_from_cfg(network_cfg)
-ckpt = torch.load(ckpt_path)
+ckpt = torch.load(ckpt_path, weights_only=False)
 model.load_state_dict(ckpt['state_dict'])
 model = model.to(device)
 model.eval()

@@ -362,20 +362,6 @@ class Mist(ProtectionBase):
             save_adv = transform(save_adv)
         
         return save_adv
-    
-
-    def protect_multiple(
-        self, 
-        images: Union[torch.Tensor, List[torch.Tensor]], 
-        target_image: Optional[torch.Tensor] = None,
-        **kwargs
-    ) -> torch.Tensor:
-        """
-        Process multiple images using MIST algorithm.
-        """
-        return super().protect_multiple(
-            images, target_image=target_image, **kwargs
-        )
 
 
  
