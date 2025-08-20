@@ -1,23 +1,32 @@
 """
 Attack Methods Module for ImageProtectionBench
 
-This module contains various attack methods to test the robustness 
-of image protection algorithms against adversarial techniques.
+Now it only contains WAVES distortion attacks.
 """
 
-from .noise import GaussianNoiseAttack, SaltPepperAttack
-from .jpeg_compression import JPEGCompressionAttack
-from .geometric_attack import RotationAttack, CropAttack, ScalingAttack, WaveAttack
+from .distortions import (
+    DistortionAttack,
+    RotationAttack,
+    ResizedCropAttack, 
+    ErasingAttack,
+    BrightnessAttack,
+    ContrastAttack,
+    BlurringAttack,
+    NoiseAttack,
+    SaltPepperAttack,
+    CompressionAttack
+)
 
 __all__ = [
-    # Noise attacks
-    'GaussianNoiseAttack',
-    'SaltPepperAttack', 
-    # Compression attacks
-    'JPEGCompressionAttack',
-    # Geometric attacks
+    # WAVES distortion attacks
+    'DistortionAttack',
     'RotationAttack',
-    'CropAttack', 
-    'ScalingAttack',
-    'WaveAttack'
-] 
+    'ResizedCropAttack',
+    'ErasingAttack', 
+    'BrightnessAttack',
+    'ContrastAttack',
+    'BlurringAttack',
+    'NoiseAttack',
+    'SaltPepperAttack',
+    'CompressionAttack'
+]
