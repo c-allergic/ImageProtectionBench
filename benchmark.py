@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import argparse
 import datetime
@@ -18,6 +18,8 @@ from data import load_dataset, DATASETS
 from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
 from models.i2v import WANModel, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
+from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
+                     ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
 from experiment_utils import setup_output_directories, run_benchmark
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
@@ -28,7 +30,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
+    parser.add_argument('--protection_method', type=str, default="VGMShield", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
@@ -38,6 +40,16 @@ if __name__ == '__main__':
     # Evaluation parameters
     parser.add_argument('--metrics', nargs='+', default=["psnr", "ssim", "lpips", "clip","time","vbench"],
                        choices=["psnr", "ssim", "lpips", "clip", "vbench", "time"])
+    
+    # Attack parameters
+    parser.add_argument('--enable_attack', action='store_true', 
+                       help="启用攻击变换")
+    parser.add_argument('--attack_type', type=str, default="rotation",
+                       choices=["rotation", "resizedcrop", "erasing", "brightness", "contrast", 
+                               "blurring", "noise", "saltpepper", "compression"],
+                       help="攻击类型")
+    parser.add_argument('--attack_strength', type=float, default=0.5,
+                       help="攻击强度 (0.0-1.0)")
     
     # System parameters
     parser.add_argument('--device', type=str, default="cuda")
@@ -96,6 +108,31 @@ if __name__ == '__main__':
     else:
         raise ValueError(f"Unknown I2V model: {args.i2v_model}")
     
+    # Initialize attack method (if enabled)
+    attack_method = None
+    if args.enable_attack:
+        print(f"Initializing attack method {args.attack_type} (strength: {args.attack_strength})...")
+        if args.attack_type == "rotation":
+            attack_method = RotationAttack(device=device)
+        elif args.attack_type == "resizedcrop":
+            attack_method = ResizedCropAttack(device=device)
+        elif args.attack_type == "erasing":
+            attack_method = ErasingAttack(device=device)
+        elif args.attack_type == "brightness":
+            attack_method = BrightnessAttack(device=device)
+        elif args.attack_type == "contrast":
+            attack_method = ContrastAttack(device=device)
+        elif args.attack_type == "blurring":
+            attack_method = BlurringAttack(device=device)
+        elif args.attack_type == "noise":
+            attack_method = NoiseAttack(device=device)
+        elif args.attack_type == "saltpepper":
+            attack_method = SaltPepperAttack(device=device)
+        elif args.attack_type == "compression":
+            attack_method = CompressionAttack(device=device)
+        else:
+            raise ValueError(f"Unknown attack type: {args.attack_type}")
+    
     # Initialize metrics
     print(f"Initializing metrics: {args.metrics}")
     metrics = {}
@@ -120,7 +157,7 @@ if __name__ == '__main__':
     
     # Run benchmark
     print("Starting main benchmark...")
-    results = run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing)
+    results = run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing, attack_method)
     
     # Save results
     results_file = os.path.join(save_path, "benchmark_results.json")
