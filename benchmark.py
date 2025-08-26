@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -20,17 +20,17 @@ from models.i2v import WANModel, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
-from experiment_utils import setup_output_directories, run_benchmark
+from experiment_utils import setup_output_directories, run_benchmark, generate_visualizations
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
     
     # Dataset parameters
-    parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
+    parser.add_argument('--dataset', type=str, default="AFHQ-V2", choices=DATASETS)
     parser.add_argument('--num_samples', type=int, default=120)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="VGMShield", 
+    parser.add_argument('--protection_method', type=str, default="Mist", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
@@ -42,7 +42,7 @@ if __name__ == '__main__':
                        choices=["psnr", "ssim", "lpips", "clip", "vbench", "time"])
     
     # Attack parameters
-    parser.add_argument('--enable_attack', action='store_true', 
+    parser.add_argument('--enable_attack',default=False, action='store_true', 
                        help="启用攻击变换")
     parser.add_argument('--attack_type', type=str, default="rotation",
                        choices=["rotation", "resizedcrop", "erasing", "brightness", "contrast", 
@@ -182,4 +182,12 @@ if __name__ == '__main__':
     
     end_time = datetime.datetime.now()
     print(f"Total benchmark time: {end_time - start_time}")
-    print("Benchmark finished successfully!") 
+    print("Benchmark finished successfully!")
+    
+    # Generate visualizations
+    print("\nGenerating visualizations...")
+    vis_success = generate_visualizations(results_file, output_dirs['visualizations'])
+    if vis_success:
+        print("Visualizations generated successfully!")
+    else:
+        print("Warning: Failed to generate visualizations")
