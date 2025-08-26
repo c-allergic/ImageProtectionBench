@@ -86,7 +86,7 @@ class PSNRMetric(ImageQualityMetric):
         # Aggregate results - 只保留average指标
         psnr_scores = np.array(psnr_scores)
         return {
-            "average_psnr": float(np.mean(psnr_scores))
+            "psnr": float(np.mean(psnr_scores))
             # "max_psnr": float(np.max(psnr_scores)),
             # "min_psnr": float(np.min(psnr_scores)),
             # "std_psnr": float(np.std(psnr_scores))
@@ -178,7 +178,7 @@ class SSIMMetric(ImageQualityMetric):
         # Aggregate results - 只保留average指标
         ssim_scores = np.array(ssim_scores)
         return {
-            "average_ssim": float(np.mean(ssim_scores))
+            "ssim": float(np.mean(ssim_scores))
             # "max_ssim": float(np.max(ssim_scores)),
             # "min_ssim": float(np.min(ssim_scores)),
             # "std_ssim": float(np.std(ssim_scores))
@@ -259,7 +259,7 @@ class LPIPSMetric(ImageQualityMetric):
         if self.model is None:
             batch_size = original_images.size(0)
             return {
-                "average_lpips": 0.0
+                "lpips": 0.0
                 # "max_lpips": 0.0,
                 # "min_lpips": 0.0,
                 # "std_lpips": 0.0
@@ -280,7 +280,7 @@ class LPIPSMetric(ImageQualityMetric):
         # Aggregate results
         lpips_scores = np.array(lpips_scores)
         return {
-            "average_lpips": float(np.mean(lpips_scores))
+            "lpips": float(np.mean(lpips_scores))
             # "max_lpips": float(np.max(lpips_scores)),
             # "min_lpips": float(np.min(lpips_scores)),
             # "std_lpips": float(np.std(lpips_scores))
