@@ -246,6 +246,10 @@ class VBenchMetric(VideoQualityMetric):
             all_scores[f'original_{dim}'] = []
             all_scores[f'protected_{dim}'] = []
             all_scores[f'diff_{dim}'] = []
+            # 如果有攻击数据，也初始化攻击相关的分数列表
+            if any('attacked_path' in path_pair for path_pair in video_paths):
+                all_scores[f'attacked_{dim}'] = []
+                all_scores[f'attacked_diff_{dim}'] = []
 
         batch_size = len(video_paths)
 
@@ -254,18 +258,35 @@ class VBenchMetric(VideoQualityMetric):
 
             original_path = path_pair['original_path']
             protected_path = path_pair['protected_path']
+            attacked_path = path_pair.get('attacked_path', None)
             video_name = f"video_{i}"
 
             print(f"原始视频路径: {original_path}")
             print(f"保护视频路径: {protected_path}")
+            if attacked_path:
+                print(f"攻击视频路径: {attacked_path}")
 
-            # 计算VBench分数
+            # 计算VBench分数（原始 vs 保护）
             video_scores = self.compute(
                 original_video_path=original_path,
                 protected_video_path=protected_path,
                 video_name=video_name,
                 **kwargs
             )
+            
+            # 如果有攻击视频，也计算攻击视频的分数
+            if attacked_path:
+                attacked_scores = self.compute(
+                    original_video_path=original_path,
+                    protected_video_path=attacked_path,
+                    video_name=f"{video_name}_attacked",
+                    **kwargs
+                )
+                # 将攻击分数合并到主分数字典中，使用"attacked"前缀
+                for dim in self.dimensions:
+                    if f'protected_{dim}' in attacked_scores:
+                        video_scores[f'attacked_{dim}'] = attacked_scores[f'protected_{dim}']
+                        video_scores[f'attacked_diff_{dim}'] = attacked_scores[f'diff_{dim}']
 
             # 检查是否为placeholder分数（即所有分数均为0.0）
             is_placeholder = True
@@ -292,27 +313,52 @@ class VBenchMetric(VideoQualityMetric):
                 all_scores[f'diff_{dim}'].append(diff_score)
 
                 print(f"  {dim}: 原始={orig_score:.4f}, 保护={prot_score:.4f}, 差值={diff_score:.4f}")
+                
+                # 如果有攻击分数，也存储
+                if f'attacked_{dim}' in video_scores:
+                    attack_score = video_scores.get(f'attacked_{dim}', 0.0)
+                    attack_diff = video_scores.get(f'attacked_diff_{dim}', 0.0)
+                    
+                    all_scores[f'attacked_{dim}'].append(attack_score)
+                    all_scores[f'attacked_diff_{dim}'].append(attack_diff)
+                    
+                    print(f"    攻击后={attack_score:.4f}, 攻击差值={attack_diff:.4f}")
 
         # 计算聚合统计
         aggregated = {}
         print(f"\n计算聚合统计...")
 
+        # 处理基本分数类型
         for score_type in ['original', 'protected', 'diff']:
             for dim in self.dimensions:
                 key = f'{score_type}_{dim}'
-                scores = all_scores[key]
+                if key in all_scores:
+                    scores = all_scores[key]
+                    if scores:
+                        avg_score = float(np.mean(scores))
+                        aggregated[f'{key}'] = avg_score
+                        print(f"  {key}: 平均={avg_score:.4f}")
 
-                if scores:
-                    avg_score = float(np.mean(scores))
-                    aggregated[f'average_{key}'] = avg_score
-                    print(f"  {key}: 平均={avg_score:.4f}")
-
-                    # 检查聚合后是否全为0.0（即批量全为placeholder）
-                    if all(s == 0.0 for s in scores):
-                        print(f"警告: {key} 的所有分数均为0.0，可能为占位符结果。")
-                else:
-                    aggregated[f'average_{key}'] = 0.0
-                    print(f"  {key}: 无有效数据")
+                        # 检查聚合后是否全为0.0（即批量全为placeholder）
+                        if all(s == 0.0 for s in scores):
+                            print(f"警告: {key} 的所有分数均为0.0，可能为占位符结果。")
+                    else:
+                        aggregated[f'{key}'] = 0.0
+                        print(f"  {key}: 无有效数据")
+        
+        # 处理攻击相关分数（如果存在）
+        for score_type in ['attacked', 'attacked_diff']:
+            for dim in self.dimensions:
+                key = f'{score_type}_{dim}'
+                if key in all_scores:
+                    scores = all_scores[key]
+                    if scores:
+                        avg_score = float(np.mean(scores))
+                        aggregated[f'{key}'] = avg_score
+                        print(f"  {key}: 平均={avg_score:.4f}")
+                    else:
+                        aggregated[f'{key}'] = 0.0
+                        print(f"  {key}: 无有效数据")
 
         print(f"VBench批量评估完成，返回 {len(aggregated)} 个聚合指标")
         return aggregated

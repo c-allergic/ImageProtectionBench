@@ -10,6 +10,8 @@ import os
 from PIL import Image
 from data import transform, pt_to_pil
 from diffusers.utils import export_to_video
+from typing import Dict, Optional
+from datetime import datetime
 
 def evaluate_images(original_images, protected_images, metrics, attacked_images=None):
     """Evaluate image quality"""
@@ -211,17 +213,17 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, 
     
     # 只在启用时间测量时添加时间统计
     if enable_timing:
-        average_time_per_image = total_protection_time / total_images_processed if total_images_processed > 0 else 0
+        time_per_image = total_protection_time / total_images_processed if total_images_processed > 0 else 0
         
         print(f"时间统计:")
         print(f"  总保护时间: {total_protection_time:.4f}秒")
         print(f"  处理图片总数: {total_images_processed}")
-        print(f"  平均每张图片处理时间: {average_time_per_image:.6f}秒")
+        print(f"  每张图片处理时间: {time_per_image:.6f}秒")
         
         result['time'] = {
             'total_protection_time': total_protection_time,
             'total_images_processed': total_images_processed,
-            'average_time_per_image': average_time_per_image
+            'time_per_image': time_per_image
         }
     else:
         print("未启用时间测量")
@@ -300,3 +302,37 @@ def save_images_and_videos(original_tensors, protected_tensors, original_videos,
         video_paths.append(video_path_entry)
     
     return video_paths
+
+
+def setup_output_directories(base_output_dir: str,
+                           experiment_name: Optional[str] = None) -> Dict[str, str]:
+    """
+    Setup output directory structure for benchmark experiments
+    
+    Args:
+        base_output_dir: Base output directory
+        experiment_name: Optional experiment name (uses timestamp if None)
+        
+    Returns:
+        Dictionary with paths to different output directories
+    """
+    if experiment_name is None:
+        experiment_name = datetime.now().strftime("experiment_%Y%m%d_%H%M%S")
+    
+    experiment_dir = os.path.join(base_output_dir, experiment_name)
+    
+    # Create directory structure
+    directories = {
+        'experiment': experiment_dir,
+        'results': os.path.join(experiment_dir, 'results'),
+        'visualizations': os.path.join(experiment_dir, 'visualizations'),
+        'videos': os.path.join(experiment_dir, 'videos'),
+        'images': os.path.join(experiment_dir, 'images'),
+    }
+    
+    # Create all directories
+    for dir_path in directories.values():
+        os.makedirs(dir_path, exist_ok=True)
+    
+    print(f"Output directories created under: {experiment_dir}")
+    return directories

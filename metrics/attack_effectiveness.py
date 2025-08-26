@@ -93,7 +93,7 @@ class CLIPScoreMetric(EffectivenessMetric):
         # Compute statistics
         frame_scores = np.array(frame_scores)
         return {
-            "average_clip_score": float(np.mean(frame_scores)),
+            "clip_score": float(np.mean(frame_scores)),
             # "max_clip_score": float(np.max(frame_scores)),
             # "min_clip_score": float(np.min(frame_scores)),
             # "std_clip_score": float(np.std(frame_scores)),
@@ -125,12 +125,12 @@ class CLIPScoreMetric(EffectivenessMetric):
             
             # Compute CLIP score for this video pair
             video_result = self.compute(orig_video, prot_video, **kwargs)
-            all_scores.append(video_result["average_clip_score"])
+            all_scores.append(video_result["clip_score"])
         
         # Aggregate results across all videos - 只保留average指标
         all_scores = np.array(all_scores)
         return {
-            "average_clip_score": float(np.mean(all_scores)),
+            "clip_score": float(np.mean(all_scores)),
             # "max_clip_score": float(np.max(all_scores)),
             # "min_clip_score": float(np.min(all_scores)),
             # "std_clip_score": float(np.std(all_scores))
