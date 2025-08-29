@@ -409,31 +409,41 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
             if metric == 'psnr':
                 # PSNR: 通常在20-50之间，设置更精细的范围
                 margin = (max_val - min_val) * 0.1
+                if margin == 0:  # 所有值相同时，设置默认margin
+                    margin = max(1.0, abs(min_val) * 0.05)
                 y_min = max(0, min_val - margin)
                 y_max = max_val + margin
                 
                 # 设置更密集的刻度
                 tick_step = (y_max - y_min) / 8
-                ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+                if tick_step > 0:  # 确保tick_step大于0
+                    ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
                 
             elif metric == 'ssim':
                 # SSIM: 通常在0.8-1.0之间，设置精细范围
                 margin = (max_val - min_val) * 0.05
+                if margin == 0:  # 所有值相同时，设置默认margin
+                    margin = 0.01
                 y_min = max(0.7, min_val - margin)
                 y_max = min(1.0, max_val + margin)
                 
                 # 设置更密集的刻度
-                ax.set_yticks(np.arange(y_min, y_max + 0.01, 0.02))
+                tick_step = 0.02
+                if y_max > y_min:  # 确保范围有效
+                    ax.set_yticks(np.arange(y_min, y_max + 0.01, tick_step))
                 
             elif metric == 'lpips':
                 # LPIPS: 值越小越好，通常在0-0.5之间
                 margin = (max_val - min_val) * 0.1
+                if margin == 0:  # 所有值相同时，设置默认margin
+                    margin = max(0.01, abs(min_val) * 0.05)
                 y_min = max(0, min_val - margin)
                 y_max = max_val + margin
                 
                 # 设置更密集的刻度
                 tick_step = (y_max - y_min) / 8
-                ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+                if tick_step > 0:  # 确保tick_step大于0
+                    ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
             
             ax.set_ylim(y_min, y_max)
         
@@ -719,6 +729,8 @@ def plot_time_metrics(df, methods, output_dir):
     
     # 根据时间范围选择更稀疏的刻度间隔
     time_range = y_max - y_min
+    if time_range <= 0:  # 防止范围为0或负数
+        time_range = 1
     if time_range < 5:
         tick_step = 1
     elif time_range < 20:
@@ -745,7 +757,11 @@ def plot_time_metrics(df, methods, output_dir):
     if len(ticks) > 5:
         # 动态调整间隔以确保最多5个刻度
         target_tick_count = 4
-        new_tick_step = (y_max - y_min) / target_tick_count
+        range_diff = y_max - y_min
+        if range_diff == 0:
+            new_tick_step = 1  # 防止除零错误
+        else:
+            new_tick_step = range_diff / target_tick_count
         
         # 将tick_step调整为较为整数的值
         if new_tick_step < 10:
