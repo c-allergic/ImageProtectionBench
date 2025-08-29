@@ -93,7 +93,7 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
     print(f"视频评估完成，总共获得 {len(results)} 个结果")
     return results
 
-def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing=False, attack_method=None):
+def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, save_path, enable_timing=False, attack_method=None):
     """Run benchmark for a single protection method"""
     device = args.device
     batch_size = 10  # 每10个图片进行一次处理，避免显存爆炸
@@ -103,6 +103,7 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, 
     
     # Prepare data
     images = data[:args.num_samples]
+    image_prompts = prompts[:args.num_samples]
     total_images = len(images)
     
     # 累积所有批次的结果
@@ -117,6 +118,7 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, 
     for i in range(0, total_images, batch_size):
         batch_end = min(i + batch_size, total_images)
         batch_images = images[i:batch_end]
+        batch_prompts = image_prompts[i:batch_end]
         batch_num = i // batch_size + 1
         
         print(f"\n=== 处理批次 {batch_num} ({i+1}-{batch_end}) ===")
@@ -153,13 +155,45 @@ def run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, 
             attacked_tensors = attack_method.attack_multiple(protected_tensors)
             print("Attack completed")
 
-        # Step 3: Generate videos
+        # Step 3: Generate videos with individual prompts
         print("Generating videos...")
-        original_videos = i2v_model.generate_video(original_tensors)
-        protected_videos = i2v_model.generate_video(protected_tensors)
+        
+        # 逐个生成视频，每个图像使用对应的prompt
+        batch_size_actual = original_tensors.size(0)
+        original_videos_list = []
+        protected_videos_list = []
+        attacked_videos_list = []
+        
+        for j in range(batch_size_actual):
+            individual_prompt = batch_prompts[j] if j < len(batch_prompts) and batch_prompts[j] else ""
+            if individual_prompt:
+                print(f"  图像 {i+j+1} : {individual_prompt}")
+            else:
+                print(f"  图像 {i+j+1}")
+            
+            # 单个图像张量
+            single_original = original_tensors[j:j+1]
+            single_protected = protected_tensors[j:j+1]
+            
+            # 生成视频
+            orig_video = i2v_model.generate_video(single_original, prompt=individual_prompt)
+            prot_video = i2v_model.generate_video(single_protected, prompt=individual_prompt)
+            
+            original_videos_list.append(orig_video)
+            protected_videos_list.append(prot_video)
+            
+            # 攻击后的视频（如果存在）
+            if attacked_tensors is not None:
+                single_attacked = attacked_tensors[j:j+1]
+                attack_video = i2v_model.generate_video(single_attacked, prompt=individual_prompt)
+                attacked_videos_list.append(attack_video)
+        
+        # 合并所有视频
+        original_videos = torch.cat(original_videos_list, dim=0)
+        protected_videos = torch.cat(protected_videos_list, dim=0)
         attacked_videos = None
-        if attacked_tensors is not None:
-            attacked_videos = i2v_model.generate_video(attacked_tensors)
+        if attacked_videos_list:
+            attacked_videos = torch.cat(attacked_videos_list, dim=0)
         
         # Step 4: Save images and videos  
         print("Saving images and videos...")

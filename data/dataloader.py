@@ -1,10 +1,11 @@
 import os
-from typing import List
+from typing import List, Dict, Tuple, Optional
 from PIL import Image
 import torch
 import numpy as np
 import torchvision.transforms as transforms
 from datasets import load_dataset as hf_load_dataset
+from .description_generation import DescriptionGenerator, check_descriptions_exist
 
 # 支持的数据集列表
 DATASETS = ['TIP-I2V', 'AFHQ-V2', 'Wikiart', 'LHQ', 'Flickr30k']
@@ -47,7 +48,7 @@ def _load_from_cache(cache_dir: str, size: int) -> List[Image.Image]:
     
     return images[:size]
 
-def load_dataset(name: str, size: int, path: str) -> List[Image.Image]:
+def load_dataset(name: str, size: int, path: str, generate_descriptions: bool = True, device: str = "cuda") -> Tuple[List[Image.Image], Optional[Dict]]:
     """
     加载指定数据集
     
@@ -55,25 +56,74 @@ def load_dataset(name: str, size: int, path: str) -> List[Image.Image]:
         name: 数据集名称，必须在DATASETS中
         size: 数据集大小
         path: 存储路径
+        generate_descriptions: 是否生成图片描述和恶意prompts
     
     Returns:
-        List[Image.Image]: 图像列表
+        Tuple[List[Image.Image], Optional[Dict]]: (图像列表, 描述数据字典)
     """
     if name not in DATASETS:
         raise ValueError(f"数据集 {name} 不支持。支持的数据集: {DATASETS}")
     
     os.makedirs(path, exist_ok=True)
     
+    # 加载图像数据
     if name == 'TIP-I2V':
-        return _load_tip_i2v(size, path)
+        images = _load_tip_i2v(size, path)
     elif name == 'AFHQ-V2':
-        return _load_afhq_v2(size, path)
+        images = _load_afhq_v2(size, path)
     elif name == 'Wikiart':
-        return _load_wikiart(size, path)
+        images = _load_wikiart(size, path)
     elif name == 'LHQ':
-        return _load_lhq(size, path)
+        images = _load_lhq(size, path)
     elif name == 'Flickr30k':
-        return _load_flickr30k(size, path)
+        images = _load_flickr30k(size, path)
+    
+    # 处理描述生成
+    descriptions_dict = None
+    if generate_descriptions:
+        descriptions_dict = _generate_or_load_descriptions(images, name, path, device)
+    
+    return images, descriptions_dict
+
+
+
+def _generate_or_load_descriptions(images: List[Image.Image], dataset_name: str, path: str, device: str = "cuda") -> Dict:
+    """
+    生成或加载图片描述和恶意prompts
+    
+    Args:
+        images: PIL图像列表
+        dataset_name: 数据集名称
+        path: 存储路径
+    
+    Returns:
+        Dict: 包含描述和恶意prompts的字典
+    """
+    import json
+    
+    # 构建描述文件路径
+    descriptions_dir = os.path.join(path, "descriptions")
+    json_path = os.path.join(descriptions_dir, f"{dataset_name.lower()}_descriptions.json")
+    
+    # 检查是否已存在足够的描述
+    if check_descriptions_exist(json_path, len(images)):
+        print(f"发现现有描述文件，正在加载: {json_path}")
+        with open(json_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    
+    # 生成新的描述
+    print(f"正在为 {dataset_name} 数据集生成图片描述和恶意prompts...")
+    
+    # 初始化描述生成器
+    generator = DescriptionGenerator(device=device)
+    
+    # 生成描述和恶意prompts
+    _, descriptions_dict = generator.process_images_with_descriptions(
+        images=images,
+        save_json_path=json_path,
+    )
+    
+    return descriptions_dict
 
 def _load_tip_i2v(size: int, path: str) -> List[Image.Image]:
     """加载TIP-I2V数据集"""

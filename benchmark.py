@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 import argparse
 import datetime
@@ -25,12 +25,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
     
     # Dataset parameters
-    parser.add_argument('--dataset', type=str, default="AFHQ-V2", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=120)
+    parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
+    parser.add_argument('--num_samples', type=int, default=20)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="Mist", 
+    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
@@ -78,7 +78,7 @@ if __name__ == '__main__':
     
     # Load dataset
     print(f"Loading dataset {args.dataset}...")
-    data = load_dataset(args.dataset, args.num_samples, args.data_path)
+    data, prompts = load_dataset(args.dataset, args.num_samples, args.data_path, generate_descriptions=True, device=device)
     
     # Initialize protection method
     print(f"Initializing protection method {args.protection_method}...")
@@ -157,7 +157,7 @@ if __name__ == '__main__':
     
     # Run benchmark
     print("Starting main benchmark...")
-    results = run_benchmark(args, data, protection_method, i2v_model, metrics, save_path, enable_timing, attack_method)
+    results = run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, save_path, enable_timing, attack_method)
     
     # Save results
     results_file = os.path.join(save_path, "benchmark_results.json")
