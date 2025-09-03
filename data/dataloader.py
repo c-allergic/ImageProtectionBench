@@ -245,7 +245,7 @@ def _load_flickr30k(size: int, path: str) -> List[Image.Image]:
     print(f"正在从HuggingFace加载Flickr30k数据集...")
     os.makedirs(cache_dir, exist_ok=True)
     
-    hf_dataset = hf_load_dataset("nlphuji/flickr30k", split="test")
+    hf_dataset = hf_load_dataset("lmms-lab/flickr30k", split="test")
     
     for i, item in enumerate(hf_dataset):
         if len(images) >= size:

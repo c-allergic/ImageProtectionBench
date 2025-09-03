@@ -476,16 +476,22 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
 def plot_clip_scores(df, methods, has_attack, output_dir):
     """绘制CLIP分数对比"""
     fig, ax = plt.subplots(figsize=(12, 6))
-    colors = ['#1f77b4', '#ff7f0e', '#d62728']
+    colors = ['#1f77b4', '#ff7f0e', '#d62728', '#2ca02c', '#ff1493']
     
     x = np.arange(len(methods))
     width = 0.3
     
     protected_key = 'protected_clip_score'
     attacked_key = 'attacked_clip_score'
+    upper_bound_key = 'clip_upper_bound'
+    lower_bound_key = 'clip_lower_bound'
     
     # 收集所有数值用于计算纵轴范围
     all_values = []
+    
+    # 获取理论上限和下限
+    upper_bound = df[upper_bound_key].iloc[0] if upper_bound_key in df.columns else None
+    lower_bound = df[lower_bound_key].iloc[0] if lower_bound_key in df.columns else None
     
     if has_attack and protected_key in df.columns and attacked_key in df.columns:
         # 攻击模式：显示保护后 vs 攻击后
@@ -504,18 +510,36 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
         
         all_values.extend(protected_vals)
     
+    # 添加理论上限和下限到all_values用于计算范围
+    if upper_bound is not None:
+        all_values.append(upper_bound)
+    if lower_bound is not None:
+        all_values.append(lower_bound)
+    
+    # 绘制理论上限和下限的水平线
+    if upper_bound is not None:
+        ax.axhline(y=upper_bound, color=colors[3], linestyle='--', linewidth=2, 
+                  label=f'Theretical Upperbound (Self Comparison): {upper_bound:.4f}', alpha=0.8)
+    if lower_bound is not None:
+        ax.axhline(y=lower_bound, color=colors[4], linestyle='--', linewidth=2, 
+                  label=f'Lowerbound (Random Comparison): {lower_bound:.4f}', alpha=0.8)
+    
     # 设置更精细的纵轴范围
     if all_values:
         min_val = min(all_values)
         max_val = max(all_values)
         
-        # CLIP分数通常在0.8-1.0之间，设置精细范围
+        # CLIP分数通常在0-1.0之间，根据实际数据范围调整
         margin = (max_val - min_val) * 0.05
-        y_min = max(0.8, min_val - margin)
+        if margin == 0:  # 防止所有值相同的情况
+            margin = 0.05
+        y_min = max(0.0, min_val - margin)
         y_max = min(1.0, max_val + margin)
         
         # 设置更密集的刻度
-        ax.set_yticks(np.arange(y_min, y_max + 0.005, 0.01))
+        tick_step = (y_max - y_min) / 10
+        if tick_step > 0:
+            ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
         ax.set_ylim(y_min, y_max)
         
         # 为数值添加标签显示
