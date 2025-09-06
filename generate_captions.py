@@ -37,7 +37,7 @@ def main():
     output_dir = f"/data_sde/lxf/ImageProtectionBench/data/descriptions"
     os.makedirs(output_dir, exist_ok=True)
     
-    output_file = os.path.join(output_dir, "afhqv2_descriptions.json")
+    output_file = os.path.join(output_dir, "test_afhq_descriptions.json")
     with open(output_file, "w", encoding="utf-8") as f:
         import json
         json.dump(descriptions_dict, f, ensure_ascii=False, indent=2)

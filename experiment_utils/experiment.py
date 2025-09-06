@@ -385,7 +385,6 @@ def setup_output_directories(base_output_dir: str,
     directories = {
         'experiment': experiment_dir,
         'results': os.path.join(experiment_dir, 'results'),
-        'visualizations': os.path.join(experiment_dir, 'visualizations'),
         'videos': os.path.join(experiment_dir, 'videos'),
         'images': os.path.join(experiment_dir, 'images'),
     }

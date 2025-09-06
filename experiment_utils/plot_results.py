@@ -32,6 +32,111 @@ def group_experiments_by_dataset(experiment_dirs):
     
     return dataset_groups
 
+def _extract_base_args(args_path):
+    """提取基准参数"""
+    with open(args_path, 'r') as f:
+        args = json.load(f)
+    
+    return {
+        'dataset': args.get('dataset', 'unknown'),
+        'num_samples': args.get('num_samples', 'unknown'),
+        'i2v_model': args.get('i2v_model', 'unknown'),
+        'enable_attack': args.get('enable_attack', False),
+        'attack_type': args.get('attack_type', None) if args.get('enable_attack', False) else None,
+        'metrics': set(args.get('metrics', []))
+    }
+
+def _print_validation_baseline(base_args, context=""):
+    """打印验证基准信息"""
+    print(f"{context}验证基准:")
+    print(f"- 样本数量: {base_args['num_samples']}")
+    print(f"- I2V模型: {base_args['i2v_model']}")
+    print(f"- 攻击状态: {'有攻击' if base_args['enable_attack'] else '无攻击'}")
+    if base_args['enable_attack']:
+        print(f"- 攻击类型: {base_args['attack_type']}")
+    print(f"- 评估指标: {', '.join(sorted(base_args['metrics']))}")
+
+def _check_experiment_consistency(exp_dir, base_args, check_dataset=True):
+    """检查单个实验的一致性"""
+    args_path = os.path.join(exp_dir, "results", "args.json")
+    results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
+    
+    if not os.path.exists(args_path):
+        return None, f"{os.path.basename(exp_dir)}: 缺少args.json文件"
+        
+    if not os.path.exists(results_path):
+        return None, f"{os.path.basename(exp_dir)}: 缺少benchmark_results.json文件"
+    
+    # 读取实验配置和结果
+    with open(args_path, 'r') as f:
+        current_args = json.load(f)
+    with open(results_path, 'r') as f:
+        current_results = json.load(f)
+    
+    method_name = current_results.get('method', os.path.basename(exp_dir))
+    issues = []
+    
+    # 检查关键参数一致性
+    if check_dataset and current_args.get('dataset', 'unknown') != base_args['dataset']:
+        issues.append(f"数据集不一致 ({current_args.get('dataset', 'unknown')} vs {base_args['dataset']})")
+    
+    if current_args.get('num_samples', 'unknown') != base_args['num_samples']:
+        issues.append(f"样本数量不一致 ({current_args.get('num_samples', 'unknown')} vs {base_args['num_samples']})")
+    
+    if current_args.get('i2v_model', 'unknown') != base_args['i2v_model']:
+        issues.append(f"I2V模型不一致 ({current_args.get('i2v_model', 'unknown')} vs {base_args['i2v_model']})")
+    
+    current_enable_attack = current_args.get('enable_attack', False)
+    if current_enable_attack != base_args['enable_attack']:
+        attack_status = "有攻击" if current_enable_attack else "无攻击"
+        base_status = "有攻击" if base_args['enable_attack'] else "无攻击"
+        issues.append(f"攻击状态不一致 ({attack_status} vs {base_status})")
+    
+    if base_args['enable_attack'] and current_enable_attack:
+        current_attack_type = current_args.get('attack_type', None)
+        if current_attack_type != base_args['attack_type']:
+            issues.append(f"攻击类型不一致 ({current_attack_type} vs {base_args['attack_type']})")
+    
+    current_metrics = set(current_args.get('metrics', []))
+    missing_core_metrics = base_args['metrics'] - current_metrics
+    if missing_core_metrics:
+        issues.append(f"缺少核心指标 {missing_core_metrics}")
+    
+    return method_name, issues
+
+def _check_method_duplicates_and_count(method_names):
+    """检查方法重复和数量"""
+    issues = []
+    unique_methods = set(method_names)
+    
+    if len(unique_methods) != len(method_names):
+        method_counts = {}
+        for method in method_names:
+            method_counts[method] = method_counts.get(method, 0) + 1
+        duplicates = [f"{method}({count}次)" for method, count in method_counts.items() if count > 1]
+        issues.append(f"重复的保护方法: {', '.join(duplicates)}")
+    
+    if len(unique_methods) < 2:
+        issues.append(f"方法数量不足，无法进行对比 (当前只有 {len(unique_methods)} 个不同方法)")
+    
+    return issues
+
+def _normalize_values_for_display(values, precision=3):
+    """标准化数值用于显示，避免精度问题导致的视觉差异"""
+    if values is None or len(values) == 0:
+        return values
+    
+    # 将数值四舍五入到指定精度
+    normalized = [round(float(v), precision) for v in values]
+    
+    # 如果所有值都相同，确保它们完全一致
+    if len(set(normalized)) == 1:
+        # 使用第一个值作为标准值
+        standard_value = normalized[0]
+        normalized = [standard_value] * len(normalized)
+    
+    return normalized
+
 def validate_single_dataset_group(experiment_dirs, dataset_name):
     """验证单个数据集组内实验的一致性"""
     if not experiment_dirs:
@@ -44,92 +149,26 @@ def validate_single_dataset_group(experiment_dirs, dataset_name):
     if not os.path.exists(first_args_path):
         return False, f"未找到基准args文件: {first_args_path}"
     
-    with open(first_args_path, 'r') as f:
-        base_args = json.load(f)
-    
-    # 提取关键基准参数
-    base_dataset = base_args.get('dataset', 'unknown')
-    base_num_samples = base_args.get('num_samples', 'unknown')
-    base_i2v_model = base_args.get('i2v_model', 'unknown')
-    base_enable_attack = base_args.get('enable_attack', False)
-    base_attack_type = base_args.get('attack_type', None) if base_enable_attack else None
-    base_metrics = set(base_args.get('metrics', []))
-    
-    print(f"数据集 {dataset_name} 验证基准:")
-    print(f"- 样本数量: {base_num_samples}")
-    print(f"- I2V模型: {base_i2v_model}")
-    print(f"- 攻击状态: {'有攻击' if base_enable_attack else '无攻击'}")
-    if base_enable_attack:
-        print(f"- 攻击类型: {base_attack_type}")
-    print(f"- 评估指标: {', '.join(sorted(base_metrics))}")
+    base_args = _extract_base_args(first_args_path)
+    _print_validation_baseline(base_args, f"数据集 {dataset_name}")
     
     # 检查组内实验的一致性
     inconsistent_experiments = []
     method_names = []
     
     for exp_dir in experiment_dirs:
-        args_path = os.path.join(exp_dir, "results", "args.json")
-        results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
-        
-        if not os.path.exists(args_path):
-            inconsistent_experiments.append(f"{os.path.basename(exp_dir)}: 缺少args.json文件")
-            continue
-            
-        if not os.path.exists(results_path):
-            inconsistent_experiments.append(f"{os.path.basename(exp_dir)}: 缺少benchmark_results.json文件")
+        method_name, issues = _check_experiment_consistency(exp_dir, base_args, check_dataset=False)
+        if method_name is None:
+            inconsistent_experiments.append(issues)
             continue
         
-        # 读取实验配置和结果
-        with open(args_path, 'r') as f:
-            current_args = json.load(f)
-        with open(results_path, 'r') as f:
-            current_results = json.load(f)
-        
-        method_name = current_results.get('method', os.path.basename(exp_dir))
         method_names.append(method_name)
-        
-        # 检查关键参数一致性（跳过数据集检查，因为已经按数据集分组）
-        current_num_samples = current_args.get('num_samples', 'unknown')
-        current_i2v_model = current_args.get('i2v_model', 'unknown')
-        current_enable_attack = current_args.get('enable_attack', False)
-        current_attack_type = current_args.get('attack_type', None) if current_enable_attack else None
-        current_metrics = set(current_args.get('metrics', []))
-        
-        # 验证样本数量一致性
-        if current_num_samples != base_num_samples:
-            inconsistent_experiments.append(f"{method_name}: 样本数量不一致 ({current_num_samples} vs {base_num_samples})")
-        
-        # 验证I2V模型一致性
-        if current_i2v_model != base_i2v_model:
-            inconsistent_experiments.append(f"{method_name}: I2V模型不一致 ({current_i2v_model} vs {base_i2v_model})")
-        
-        # 验证攻击状态一致性
-        if current_enable_attack != base_enable_attack:
-            attack_status = "有攻击" if current_enable_attack else "无攻击"
-            base_status = "有攻击" if base_enable_attack else "无攻击"
-            inconsistent_experiments.append(f"{method_name}: 攻击状态不一致 ({attack_status} vs {base_status})")
-        
-        # 如果都启用攻击，验证攻击类型一致性
-        if base_enable_attack and current_enable_attack and current_attack_type != base_attack_type:
-            inconsistent_experiments.append(f"{method_name}: 攻击类型不一致 ({current_attack_type} vs {base_attack_type})")
-        
-        # 验证关键指标一致性
-        missing_core_metrics = base_metrics - current_metrics
-        if missing_core_metrics:
-            inconsistent_experiments.append(f"{method_name}: 缺少核心指标 {missing_core_metrics}")
+        for issue in issues:
+            inconsistent_experiments.append(f"{method_name}: {issue}")
     
-    # 检查是否是不同的保护方法
-    unique_methods = set(method_names)
-    if len(unique_methods) != len(method_names):
-        method_counts = {}
-        for method in method_names:
-            method_counts[method] = method_counts.get(method, 0) + 1
-        duplicates = [f"{method}({count}次)" for method, count in method_counts.items() if count > 1]
-        inconsistent_experiments.append(f"重复的保护方法: {', '.join(duplicates)}")
-    
-    # 检查是否有足够的方法进行对比
-    if len(unique_methods) < 2:
-        inconsistent_experiments.append(f"方法数量不足，无法进行对比 (当前只有 {len(unique_methods)} 个不同方法)")
+    # 检查方法重复和数量
+    method_issues = _check_method_duplicates_and_count(method_names)
+    inconsistent_experiments.extend(method_issues)
     
     # 生成验证报告
     if inconsistent_experiments:
@@ -169,107 +208,30 @@ def validate_batch_experiment_consistency(experiment_dirs):
         return True, f"检测到多数据集，将分组处理 ({len(dataset_groups)} 个数据集)"
     
     # 单数据集的原有逻辑
-    # 读取第一个实验的args作为基准
     first_args_path = os.path.join(experiment_dirs[0], "results", "args.json")
     if not os.path.exists(first_args_path):
         return False, f"未找到基准args文件: {first_args_path}"
     
-    with open(first_args_path, 'r') as f:
-        base_args = json.load(f)
-    
-    # 提取关键基准参数
-    base_dataset = base_args.get('dataset', 'unknown')
-    base_num_samples = base_args.get('num_samples', 'unknown')
-    base_i2v_model = base_args.get('i2v_model', 'unknown')
-    base_enable_attack = base_args.get('enable_attack', False)
-    base_attack_type = base_args.get('attack_type', None) if base_enable_attack else None
-    base_metrics = set(base_args.get('metrics', []))
-    
-    print(f"实验批次验证基准:")
-    print(f"- 数据集: {base_dataset}")
-    print(f"- 样本数量: {base_num_samples}")
-    print(f"- I2V模型: {base_i2v_model}")
-    print(f"- 攻击状态: {'有攻击' if base_enable_attack else '无攻击'}")
-    if base_enable_attack:
-        print(f"- 攻击类型: {base_attack_type}")
-    print(f"- 评估指标: {', '.join(sorted(base_metrics))}")
+    base_args = _extract_base_args(first_args_path)
+    _print_validation_baseline(base_args, "实验批次")
     
     # 检查所有实验的一致性
     inconsistent_experiments = []
     method_names = []
     
     for exp_dir in experiment_dirs:
-        args_path = os.path.join(exp_dir, "results", "args.json")
-        results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
-        
-        if not os.path.exists(args_path):
-            inconsistent_experiments.append(f"{os.path.basename(exp_dir)}: 缺少args.json文件")
-            continue
-            
-        if not os.path.exists(results_path):
-            inconsistent_experiments.append(f"{os.path.basename(exp_dir)}: 缺少benchmark_results.json文件")
+        method_name, issues = _check_experiment_consistency(exp_dir, base_args, check_dataset=True)
+        if method_name is None:
+            inconsistent_experiments.append(issues)
             continue
         
-        # 读取实验配置
-        with open(args_path, 'r') as f:
-            current_args = json.load(f)
-        
-        # 读取实验结果获取方法名
-        with open(results_path, 'r') as f:
-            current_results = json.load(f)
-        
-        method_name = current_results.get('method', os.path.basename(exp_dir))
         method_names.append(method_name)
-        
-        # 检查关键参数一致性
-        current_dataset = current_args.get('dataset', 'unknown')
-        current_num_samples = current_args.get('num_samples', 'unknown')
-        current_i2v_model = current_args.get('i2v_model', 'unknown')
-        current_enable_attack = current_args.get('enable_attack', False)
-        current_attack_type = current_args.get('attack_type', None) if current_enable_attack else None
-        current_metrics = set(current_args.get('metrics', []))
-        
-        # 验证数据集一致性
-        if current_dataset != base_dataset:
-            inconsistent_experiments.append(f"{method_name}: 数据集不一致 ({current_dataset} vs {base_dataset})")
-        
-        # 验证样本数量一致性
-        if current_num_samples != base_num_samples:
-            inconsistent_experiments.append(f"{method_name}: 样本数量不一致 ({current_num_samples} vs {base_num_samples})")
-        
-        # 验证I2V模型一致性
-        if current_i2v_model != base_i2v_model:
-            inconsistent_experiments.append(f"{method_name}: I2V模型不一致 ({current_i2v_model} vs {base_i2v_model})")
-        
-        # 验证攻击状态一致性
-        if current_enable_attack != base_enable_attack:
-            attack_status = "有攻击" if current_enable_attack else "无攻击"
-            base_status = "有攻击" if base_enable_attack else "无攻击"
-            inconsistent_experiments.append(f"{method_name}: 攻击状态不一致 ({attack_status} vs {base_status})")
-        
-        # 如果都启用攻击，验证攻击类型一致性
-        if base_enable_attack and current_enable_attack and current_attack_type != base_attack_type:
-            inconsistent_experiments.append(f"{method_name}: 攻击类型不一致 ({current_attack_type} vs {base_attack_type})")
-        
-        # 验证关键指标一致性（不要求完全一致，但核心指标应该存在）
-        missing_core_metrics = base_metrics - current_metrics
-        if missing_core_metrics:
-            inconsistent_experiments.append(f"{method_name}: 缺少核心指标 {missing_core_metrics}")
+        for issue in issues:
+            inconsistent_experiments.append(f"{method_name}: {issue}")
     
-    # 检查是否是不同的保护方法
-    unique_methods = set(method_names)
-    if len(unique_methods) != len(method_names):
-        # 有重复方法
-        method_counts = {}
-        for method in method_names:
-            method_counts[method] = method_counts.get(method, 0) + 1
-        
-        duplicates = [f"{method}({count}次)" for method, count in method_counts.items() if count > 1]
-        inconsistent_experiments.append(f"重复的保护方法: {', '.join(duplicates)}")
-    
-    # 检查是否有足够的方法进行对比
-    if len(unique_methods) < 2:
-        inconsistent_experiments.append(f"方法数量不足，无法进行对比 (当前只有 {len(unique_methods)} 个不同方法)")
+    # 检查方法重复和数量
+    method_issues = _check_method_duplicates_and_count(method_names)
+    inconsistent_experiments.extend(method_issues)
     
     # 生成验证报告
     if inconsistent_experiments:
@@ -386,8 +348,8 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
         
         if has_attack and protected_key in df.columns and attacked_key in df.columns:
             # 攻击模式：显示保护后 vs 攻击后
-            protected_vals = df[protected_key].values
-            attacked_vals = df[attacked_key].values
+            protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
+            attacked_vals = _normalize_values_for_display(df[attacked_key].values, precision=3)
             
             ax.bar(x - width/2, protected_vals, width, label='Protected', alpha=0.8, color=colors[1])
             ax.bar(x + width/2, attacked_vals, width, label='Attacked', alpha=0.8, color=colors[2])
@@ -396,54 +358,64 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
             all_values.extend(attacked_vals)
         elif protected_key in df.columns:
             # 常规模式：只显示保护后
-            protected_vals = df[protected_key].values
+            protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
             ax.bar(x, protected_vals, width, label='Protected', alpha=0.8, color=colors[1])
             
             all_values.extend(protected_vals)
         
-        # 设置更精细的纵轴范围
+        # 设置合理的纵轴范围，避免放大微小差异
         if all_values:
             min_val = min(all_values)
             max_val = max(all_values)
+            data_range = max_val - min_val
             
             if metric == 'psnr':
-                # PSNR: 通常在20-50之间，设置更精细的范围
-                margin = (max_val - min_val) * 0.1
-                if margin == 0:  # 所有值相同时，设置默认margin
-                    margin = max(1.0, abs(min_val) * 0.05)
-                y_min = max(0, min_val - margin)
-                y_max = max_val + margin
+                # PSNR: 通常在20-50之间
+                if data_range < 1.0:  # 差异很小，使用固定范围
+                    center = (min_val + max_val) / 2
+                    y_min = max(0, center - 2.0)
+                    y_max = center + 2.0
+                else:
+                    # 正常差异，使用适度边距
+                    margin = max(1.0, data_range * 0.1)
+                    y_min = max(0, min_val - margin)
+                    y_max = max_val + margin
                 
-                # 设置更密集的刻度
-                tick_step = (y_max - y_min) / 8
-                if tick_step > 0:  # 确保tick_step大于0
-                    ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+                # 设置合理的刻度间隔
+                tick_step = max(1.0, (y_max - y_min) / 6)
+                ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
                 
             elif metric == 'ssim':
-                # SSIM: 通常在0.8-1.0之间，设置精细范围
-                margin = (max_val - min_val) * 0.05
-                if margin == 0:  # 所有值相同时，设置默认margin
-                    margin = 0.01
-                y_min = max(0.7, min_val - margin)
-                y_max = min(1.0, max_val + margin)
+                # SSIM: 通常在0.8-1.0之间
+                if data_range < 0.01:  # 差异很小，使用固定范围
+                    center = (min_val + max_val) / 2
+                    y_min = max(0.7, center - 0.05)
+                    y_max = min(1.0, center + 0.05)
+                else:
+                    # 正常差异，使用适度边距
+                    margin = max(0.01, data_range * 0.1)
+                    y_min = max(0.7, min_val - margin)
+                    y_max = min(1.0, max_val + margin)
                 
-                # 设置更密集的刻度
-                tick_step = 0.02
-                if y_max > y_min:  # 确保范围有效
-                    ax.set_yticks(np.arange(y_min, y_max + 0.01, tick_step))
+                # 设置合理的刻度间隔
+                tick_step = max(0.02, (y_max - y_min) / 5)
+                ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
                 
             elif metric == 'lpips':
                 # LPIPS: 值越小越好，通常在0-0.5之间
-                margin = (max_val - min_val) * 0.1
-                if margin == 0:  # 所有值相同时，设置默认margin
-                    margin = max(0.01, abs(min_val) * 0.05)
-                y_min = max(0, min_val - margin)
-                y_max = max_val + margin
+                if data_range < 0.01:  # 差异很小，使用固定范围
+                    center = (min_val + max_val) / 2
+                    y_min = max(0, center - 0.05)
+                    y_max = min(0.5, center + 0.05)
+                else:
+                    # 正常差异，使用适度边距
+                    margin = max(0.01, data_range * 0.1)
+                    y_min = max(0, min_val - margin)
+                    y_max = min(0.5, max_val + margin)
                 
-                # 设置更密集的刻度
-                tick_step = (y_max - y_min) / 8
-                if tick_step > 0:  # 确保tick_step大于0
-                    ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+                # 设置合理的刻度间隔
+                tick_step = max(0.02, (y_max - y_min) / 5)
+                ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
             
             ax.set_ylim(y_min, y_max)
         
@@ -495,8 +467,8 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
     
     if has_attack and protected_key in df.columns and attacked_key in df.columns:
         # 攻击模式：显示保护后 vs 攻击后
-        protected_vals = df[protected_key].values
-        attacked_vals = df[attacked_key].values
+        protected_vals = _normalize_values_for_display(df[protected_key].values, precision=4)
+        attacked_vals = _normalize_values_for_display(df[attacked_key].values, precision=4)
         
         ax.bar(x - width/2, protected_vals, width, label='Protected Video', alpha=0.8, color=colors[1])
         ax.bar(x + width/2, attacked_vals, width, label='Attacked Video', alpha=0.8, color=colors[2])
@@ -505,7 +477,7 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
         all_values.extend(attacked_vals)
     elif protected_key in df.columns:
         # 常规模式：只显示保护后
-        protected_vals = df[protected_key].values
+        protected_vals = _normalize_values_for_display(df[protected_key].values, precision=4)
         ax.bar(x, protected_vals, width, label='Protected Video', alpha=0.8, color=colors[1])
         
         all_values.extend(protected_vals)
@@ -524,22 +496,26 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
         ax.axhline(y=lower_bound, color=colors[4], linestyle='--', linewidth=2, 
                   label=f'Lowerbound (Random Comparison): {lower_bound:.4f}', alpha=0.8)
     
-    # 设置更精细的纵轴范围
+    # 设置合理的纵轴范围，避免放大微小差异
     if all_values:
         min_val = min(all_values)
         max_val = max(all_values)
+        data_range = max_val - min_val
         
-        # CLIP分数通常在0-1.0之间，根据实际数据范围调整
-        margin = (max_val - min_val) * 0.05
-        if margin == 0:  # 防止所有值相同的情况
-            margin = 0.05
-        y_min = max(0.0, min_val - margin)
-        y_max = min(1.0, max_val + margin)
+        # CLIP分数通常在0-1.0之间
+        if data_range < 0.01:  # 差异很小，使用固定范围
+            center = (min_val + max_val) / 2
+            y_min = max(0.0, center - 0.05)
+            y_max = min(1.0, center + 0.05)
+        else:
+            # 正常差异，使用适度边距
+            margin = max(0.02, data_range * 0.1)
+            y_min = max(0.0, min_val - margin)
+            y_max = min(1.0, max_val + margin)
         
-        # 设置更密集的刻度
-        tick_step = (y_max - y_min) / 10
-        if tick_step > 0:
-            ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+        # 设置合理的刻度间隔
+        tick_step = max(0.05, (y_max - y_min) / 6)
+        ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
         ax.set_ylim(y_min, y_max)
         
         # 为数值添加标签显示
@@ -599,8 +575,8 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
         
         if original_key in df.columns and protected_key in df.columns:
             # 显示原始 vs 保护后
-            original_vals = df[original_key].values
-            protected_vals = df[protected_key].values
+            original_vals = _normalize_values_for_display(df[original_key].values, precision=3)
+            protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
             
             ax.bar(x - width/2, original_vals, width, label='Original', alpha=0.8, color=colors[0])
             ax.bar(x + width/2, protected_vals, width, label='Protected', alpha=0.8, color=colors[1])
@@ -609,7 +585,7 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
             all_values.extend(protected_vals)
         elif protected_key in df.columns:
             # 只有保护数据
-            protected_vals = df[protected_key].values
+            protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
             ax.bar(x, protected_vals, width, label='Protected', alpha=0.8, color=colors[1])
             
             all_values.extend(protected_vals)
@@ -618,18 +594,29 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
             ax.text(0.5, 0.5, 'No Data', transform=ax.transAxes, ha='center', va='center')
             continue
         
-        # 设置更精细的纵轴范围
+        # 设置合理的纵轴范围，特别针对VBench指标优化
         if all_values:
             min_val = min(all_values)
             max_val = max(all_values)
+            data_range = max_val - min_val
             
-            # VBench指标通常在0.3-1.0之间，设置精细范围
-            margin = (max_val - min_val) * 0.05
-            y_min = max(0.3, min_val - margin)
-            y_max = min(1.0, max_val + margin)
+            # VBench指标通常在0.3-1.0之间，使用更合理的区间设置
+            if data_range < 0.05:  # 差异很小，使用固定范围避免放大微小差异
+                center = (min_val + max_val) / 2
+                y_min = max(0.3, center - 0.1)
+                y_max = min(1.0, center + 0.1)
+            elif data_range < 0.2:  # 中等差异，使用适度边距
+                margin = max(0.05, data_range * 0.2)
+                y_min = max(0.3, min_val - margin)
+                y_max = min(1.0, max_val + margin)
+            else:  # 差异较大，使用正常边距
+                margin = data_range * 0.1
+                y_min = max(0.3, min_val - margin)
+                y_max = min(1.0, max_val + margin)
             
-            # 设置更密集的刻度
-            ax.set_yticks(np.arange(y_min, y_max + 0.01, 0.05))
+            # 设置合理的刻度间隔，避免过密
+            tick_step = max(0.1, (y_max - y_min) / 4)
+            ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
             ax.set_ylim(y_min, y_max)
             
             # 为数值添加标签显示
@@ -920,6 +907,49 @@ def generate_dataset_group_visualizations(experiment_dirs, dataset_name, output_
         traceback.print_exc()
         return False
 
+def _load_experiment_data(experiment_dirs):
+    """从实验目录加载数据"""
+    data = []
+    has_attack = False
+    
+    for exp_dir in experiment_dirs:
+        results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
+        if not os.path.exists(results_path):
+            print(f"⚠️ 跳过缺少结果文件的实验: {os.path.basename(exp_dir)}")
+            continue
+            
+        with open(results_path, 'r') as f:
+            result = json.load(f)
+            
+        # 准备DataFrame数据
+        row = {'method': result['method']}
+        row.update(result['aggregated'])
+        if 'time' in result:
+            row.update(result['time'])
+        
+        # 检查是否有攻击数据
+        if any('attacked_' in key for key in result['aggregated'].keys()):
+            has_attack = True
+        
+        data.append(row)
+    
+    return data, has_attack
+
+def _setup_matplotlib_style():
+    """设置matplotlib风格"""
+    plt.style.use('default')
+    plt.rcParams['font.size'] = 10
+
+def _generate_plots(df, methods, has_attack, output_dir):
+    """生成所有图表"""
+    plot_image_metrics(df, methods, has_attack, output_dir)
+    plot_clip_scores(df, methods, has_attack, output_dir)
+    plot_vbench_metrics(df, methods, has_attack, output_dir)
+    plot_time_metrics(df, methods, output_dir)
+    
+    if has_attack:
+        plot_attack_effectiveness(df, methods, output_dir)
+
 def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: str = None) -> bool:
     """
     为一批实验结果生成对比可视化图表，支持多数据集分组处理
@@ -967,9 +997,7 @@ def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: 
             success_count = 0
             total_datasets = len(dataset_groups)
             
-            # 设置matplotlib风格
-            plt.style.use('default')
-            plt.rcParams['font.size'] = 10
+            _setup_matplotlib_style()
             
             for dataset_name, dirs in dataset_groups.items():
                 print(f"\n{'-'*40}")
@@ -1008,123 +1036,35 @@ def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: 
                 return False
         
         else:
-            # 单数据集情况：使用原有逻辑
+            # 单数据集情况
             dataset_name = list(dataset_groups.keys())[0]
             print(f"单数据集模式: {dataset_name}")
             
-            # 读取所有数据
-            data = []
-            has_attack = False
+            # 加载数据
+            data, has_attack = _load_experiment_data(experiment_dirs)
             
-            for exp_dir in experiment_dirs:
-                results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
-                with open(results_path, 'r') as f:
-                    result = json.load(f)
-                    
-                    # 准备DataFrame数据
-                    row = {'method': result['method']}
-                    row.update(result['aggregated'])
-                    if 'time' in result:
-                        row.update(result['time'])
-                    
-                    # 检查是否有攻击数据
-                    if any('attacked_' in key for key in result['aggregated'].keys()):
-                        has_attack = True
-                    
-                    data.append(row)
+            if not data:
+                print("❌ 没有有效的实验数据")
+                return False
             
             # 创建DataFrame
             df = pd.DataFrame(data)
             methods = df['method'].tolist()
             
-            # 设置matplotlib风格
-            plt.style.use('default')
-            plt.rcParams['font.size'] = 10
+            _setup_matplotlib_style()
             
             print(f"检测到 {len(methods)} 个方法: {methods}")
             print(f"包含攻击数据: {has_attack}")
             print(f"对比图表输出目录: {output_dir}")
             
             # 生成对比图表
-            plot_image_metrics(df, methods, has_attack, output_dir)
-            plot_clip_scores(df, methods, has_attack, output_dir)
-            plot_vbench_metrics(df, methods, has_attack, output_dir)
-            plot_time_metrics(df, methods, output_dir)
-            
-            if has_attack:
-                plot_attack_effectiveness(df, methods, output_dir)
+            _generate_plots(df, methods, has_attack, output_dir)
             
             print(f"单数据集对比可视化图表生成完成: {output_dir}")
             return True
         
     except Exception as e:
         print(f"生成批量对比可视化图表时出错: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def generate_visualizations(results_file: str, output_dir) -> bool:
-    """
-    为实验结果生成可视化图表
-    
-    Args:
-        results_file: benchmark_results.json文件的路径
-        output_dir: 可视化图表输出目录（可选，默认为results_file所在目录的visualizations子目录）
-        
-    Returns:
-        bool: 是否成功生成图表
-    """
-    try:
-        # 读取结果文件
-        with open(results_file, 'r') as f:
-            result = json.load(f)
-            
-        # 确定输出目录
-        if output_dir is None:
-            result_dir = os.path.dirname(results_file)
-            experiment_dir = os.path.dirname(result_dir)
-            output_dir = os.path.join(experiment_dir, 'visualizations')
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # 准备数据
-        method_name = result['method']
-        row = {'method': method_name}
-        row.update(result['aggregated'])
-        if 'time' in result:
-            row.update(result['time'])
-        
-        df = pd.DataFrame([row])
-        methods = [method_name]
-        
-        # 检查是否有攻击数据
-        has_attack = any('attacked_' in key for key in result['aggregated'].keys())
-        
-        # 设置matplotlib风格
-        plt.style.use('default')
-        plt.rcParams['font.size'] = 10
-        
-        print(f"为方法 {method_name} 生成可视化图表")
-        print(f"输出目录: {output_dir}")
-        print(f"包含攻击数据: {has_attack}")
-        
-        # 生成图表
-        plot_image_metrics(df, methods, has_attack, output_dir)
-        plot_clip_scores(df, methods, has_attack, output_dir)
-        plot_vbench_metrics(df, methods, has_attack, output_dir)
-        
-        if has_attack:
-            plot_attack_effectiveness(df, methods, output_dir)
-            
-        # 生成时间指标图表
-        plot_time_metrics(df, methods, output_dir)
-        
-        print(f"可视化图表生成完成: {output_dir}")
-        return True
-        
-    except Exception as e:
-        print(f"生成可视化图表时出错: {e}")
         import traceback
         traceback.print_exc()
         return False

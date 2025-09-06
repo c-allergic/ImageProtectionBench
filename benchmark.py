@@ -7,7 +7,7 @@ Evaluates image protection methods against I2V models without attacks.
 
 import os
 # Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -20,17 +20,17 @@ from models.i2v import WANModel, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
-from experiment_utils import setup_output_directories, run_benchmark, generate_visualizations
+from experiment_utils import setup_output_directories, run_benchmark
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
     
     # Dataset parameters
-    parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=20)
+    parser.add_argument('--dataset', type=str, default="AFHQ-V2", choices=DATASETS)
+    parser.add_argument('--num_samples', type=int, default=150)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
+    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
@@ -53,7 +53,7 @@ if __name__ == '__main__':
     
     # System parameters
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="outputs")
+    parser.add_argument('--output_dir', type=str, default="outputs_AFHQ-V2")
     
     args = parser.parse_args()
     
@@ -183,11 +183,3 @@ if __name__ == '__main__':
     end_time = datetime.datetime.now()
     print(f"Total benchmark time: {end_time - start_time}")
     print("Benchmark finished successfully!")
-    
-    # Generate visualizations
-    print("\nGenerating visualizations...")
-    vis_success = generate_visualizations(results_file, output_dirs['visualizations'])
-    if vis_success:
-        print("Visualizations generated successfully!")
-    else:
-        print("Warning: Failed to generate visualizations")

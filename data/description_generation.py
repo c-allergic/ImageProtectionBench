@@ -130,7 +130,26 @@ class DescriptionGenerator:
         # 解码输出
         description = self.processor.decode(outputs[0][inputs["input_ids"].shape[-1]:])
         
-        return description.strip() if description.strip() else "A picture"
+        # 清理描述文本
+        description = self._clean_description(description)
+        
+        return description if description else "A picture"
+    
+    def _clean_description(self, description: str) -> str:
+        if not description:
+            return ""
+        
+        # 移除首尾空白
+        description = description.strip()
+        
+        # 移除Qwen模型的终止符
+        description = description.replace("<|im_end|>", "").strip()
+        
+        # 检查是否有句号，如果没有则移除
+        if description and description.endswith(('.', '!', '?')):
+            description = description[:-1]
+        
+        return description
     
     def generate_descriptions_multiple(self, images: List[Image.Image]) -> List[str]:
         """

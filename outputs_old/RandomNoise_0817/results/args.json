@@ -1,0 +1,17 @@
+{
+    "dataset": "Flickr30k",
+    "num_samples": 120,
+    "data_path": "./data",
+    "protection_method": "RandomNoise",
+    "i2v_model": "Skyreel",
+    "metrics": [
+        "psnr",
+        "ssim",
+        "lpips",
+        "clip",
+        "time",
+        "vbench"
+    ],
+    "device": "cuda",
+    "output_dir": "outputs"
+}
