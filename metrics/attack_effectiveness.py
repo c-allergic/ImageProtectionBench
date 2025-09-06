@@ -135,3 +135,65 @@ class CLIPScoreMetric(EffectivenessMetric):
             # "min_clip_score": float(np.min(all_scores)),
             # "std_clip_score": float(np.std(all_scores))
         }
+    
+    def compute_upper_bound(self, videos: torch.Tensor, sample_size: int = 10) -> float:
+        """
+        计算CLIP分数的理论上限：视频与自身对比
+        
+        Args:
+            videos: 视频张量 [B, T, C, H, W]
+            sample_size: 采样大小，避免计算过多
+            
+        Returns:
+            上限分数的平均值
+        """
+        batch_size = videos.size(0)
+        sample_size = min(sample_size, batch_size)
+        
+        # 随机采样一部分视频
+        indices = np.random.choice(batch_size, sample_size, replace=False)
+        sampled_videos = videos[indices]
+        
+        upper_scores = []
+        with torch.no_grad():
+            for i in range(sample_size):
+                video = sampled_videos[i]
+                # 视频与自身对比
+                result = self.compute(video, video)
+                if result:
+                    upper_scores.append(result["clip_score"])
+        
+        return float(np.mean(upper_scores)) if upper_scores else 1.0
+    
+    def compute_lower_bound(self, videos: torch.Tensor, sample_size: int = 10) -> float:
+        """
+        计算CLIP分数的理论下限：随机无关视频对比
+        
+        Args:
+            videos: 视频张量 [B, T, C, H, W]  
+            sample_size: 采样大小
+            
+        Returns:
+            下限分数的平均值
+        """
+        batch_size = videos.size(0)
+        if batch_size < 2:
+            return 0.0
+            
+        # 确保有足够的视频进行配对
+        sample_size = min(sample_size, batch_size * (batch_size - 1) // 2)
+        
+        lower_scores = []
+        with torch.no_grad():
+            for _ in range(sample_size):
+                # 随机选择两个不同的视频
+                i, j = np.random.choice(batch_size, 2, replace=False)
+                video1 = videos[i]
+                video2 = videos[j]
+                
+                # 计算无关视频间的CLIP分数
+                result = self.compute(video1, video2)
+                if result:
+                    lower_scores.append(result["clip_score"])
+        
+        return float(np.mean(lower_scores)) if lower_scores else 0.0

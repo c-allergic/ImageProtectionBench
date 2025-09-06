@@ -34,7 +34,7 @@ def evaluate_images(original_images, protected_images, metrics, attacked_images=
     
     return results
 
-def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None):
+def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None, compute_clip_bounds=True):
     """Evaluate video quality and effectiveness"""
     results = {}
     print(f"开始视频评估，video_paths数量: {len(video_paths) if video_paths else 0}")
@@ -55,6 +55,18 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
                     for key, value in clip_result.items():
                         results[f'protected_{key}'] = value
                     print(f"保护后视频CLIP评估完成，获得 {len(clip_result)} 个结果")
+                
+                # 只在第一个批次计算CLIP理论上限和下限
+                if compute_clip_bounds:
+                    print("计算CLIP理论上限...")
+                    upper_bound = metric.compute_upper_bound(original_videos, sample_size=10)
+                    results['clip_upper_bound'] = upper_bound
+                    print(f"CLIP理论上限: {upper_bound:.4f}")
+                    
+                    print("计算CLIP理论下限...")
+                    lower_bound = metric.compute_lower_bound(original_videos, sample_size=10)
+                    results['clip_lower_bound'] = lower_bound
+                    print(f"CLIP理论下限: {lower_bound:.4f}")
                 
                 # 如果有攻击后视频，计算原图 vs 攻击后视频的CLIP评估  
                 if attacked_videos is not None:
@@ -103,7 +115,15 @@ def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, sa
     
     # Prepare data
     images = data[:args.num_samples]
-    image_prompts = prompts[:args.num_samples]
+    
+    # 从prompts字典中提取描述数据
+    if prompts and "data" in prompts:
+        # 提取描述列表，限制到num_samples
+        image_prompts = [item["malicious_prompt"] for item in prompts["data"][:args.num_samples]]
+    else:
+        # 如果没有描述数据，使用空字符串列表
+        image_prompts = [""] * args.num_samples
+    
     total_images = len(images)
     
     # 累积所有批次的结果
@@ -203,7 +223,9 @@ def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, sa
         print("Evaluating results...")
         image_metrics = {k: v for k, v in metrics.items() if v is not None}
         image_results = evaluate_images(original_tensors, protected_tensors, image_metrics, attacked_tensors)
-        video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos, attacked_videos)
+        # 只在第一个批次计算CLIP bounds
+        is_first_batch = (i == 0)
+        video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos, attacked_videos, compute_clip_bounds=is_first_batch)
         
         # 保存批次结果
         all_image_results.append(image_results)
@@ -234,8 +256,12 @@ def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, sa
     aggregated = {}
     for key, values in final_results.items():
         if all(isinstance(v, (int, float)) for v in values):
-            # 数值取平均
-            aggregated[key] = sum(values) / len(values)
+            # 对于理论上限和下限，使用第一个值（它们对所有批次都相同）
+            if key in ['clip_upper_bound', 'clip_lower_bound']:
+                aggregated[key] = values[0]
+            else:
+                # 其他数值取平均
+                aggregated[key] = sum(values) / len(values)
         else:
             aggregated[key] = values
     

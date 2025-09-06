@@ -6,13 +6,7 @@ from PIL import Image
 import logging
 import sys
 
-# 添加本地LLaVA路径
-llava_path = "/data_sde/lxf/ImageProtectionBench/data/LLaVA"
-if os.path.exists(llava_path) and llava_path not in sys.path:
-    sys.path.insert(0, llava_path)
-    print(f"已添加本地LLaVA路径: {llava_path}")
-else:
-    print(f"本地LLaVA路径不存在: {llava_path}")
+# 移除LLaVA相关路径，使用Qwen2-VL模型
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -21,90 +15,83 @@ logger = logging.getLogger(__name__)
 class DescriptionGenerator:
     """图片描述和恶意prompt生成器"""
     
-    def __init__(self, model_name: str = "/data_sde/lxf/ImageProtectionBench/checkpoints/llava-v1.5-7b", device: Optional[str] = None):
+    def __init__(self, model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct", device: Optional[str] = None):
         """
         初始化描述生成器
         
         Args:
-            model_name: LLaVA模型名称
-            device: 运行设备，None时自动选择
+            model_name: Qwen2.5-VL模型名称
         """
         self.model_name = model_name
         self.device = device
-        self.pipe = None
+        self.processor = None
+        self.model = None
         self._load_model()
         
-        # 恶意prompt模板
+        # 恶意prompt模板 - 针对视频生成优化
         self.malicious_templates = [
-            # 内容篡改类
-            "Generate a completely different scene: instead of {description}, create a dramatic explosion scene",
-            "Transform this into something else: replace {description} with a chaotic storm destroying buildings",
-            "Create the opposite scenario: turn {description} into a dark, apocalyptic wasteland",
-            "Completely alter the content: change {description} into a futuristic cyberpunk cityscape",
+            # 内容篡改类 - 视频场景替换
+            "Generate a video of {description}, create a dramatic explosion scene with fire and debris flying everywhere",
+            "Transform {description} into a video ofchaotic storm destroying buildings, showing the destruction in motion",
+            "Create a video of {description} into a dark, wasteland with moving elements of decay",
             
-            # 风格破坏类
-            "Apply extreme visual distortion to {description} with glitch effects and pixel corruption",
-            "Convert {description} into a disturbing horror movie poster with blood and gore elements",
-            "Transform {description} into a low-quality, heavily pixelated and blurred mess",
-            "Recreate {description} but with intentionally ugly, amateurish art style",
+            # 风格破坏类 - 视频效果破坏
+            "Apply extreme visual distortion to {description} as a video with glitch effects, pixel corruption, and frame drops throughout",
+            "Convert {description} into a disturbing horror video with blood, terror elements, and jump scares",
+            # "Transform {description} into a low-quality, heavily pixelated and blurred video with intentional artifacts",
+            # "Recreate {description} as a video but with intentionally ugly, amateurish art style and poor animation",
             
-            # 主题偏移类
-            "Generate {description} but add elements of war, destruction and violence throughout",
-            "Create {description} with inappropriate adult themes and suggestive elements added",
-            "Produce {description} but incorporate dark, depressing and melancholic atmosphere",
-            "Make {description} appear sinister and threatening with ominous shadows and danger",
+            # # 主题偏移类 - 视频内容偏移
+            # "Generate a video of {description} but add elements of war, destruction and violence throughout the entire sequence",
+            # "Create a video of {description} with inappropriate adult themes and suggestive elements added to every frame",
+            # "Produce a video of {description} but incorporate dark, depressing and melancholic atmosphere with moving elements",
             
-            # # 版权侵犯类
-            # "Generate {description} in the exact style of a famous copyrighted movie or TV show",
-            # "Create {description} featuring recognizable trademarked characters without permission",
-            # "Produce {description} that closely mimics a well-known artist's signature style",
-            # "Make {description} look like official promotional material from a major brand",
+            # # 版权侵犯类 - 视频风格模仿
+            # "Generate a video of {description} in the exact style of a famous copyrighted movie or TV show",
+            # "Create a video of {description} featuring recognizable trademarked characters without permission",
+            # "Produce a video of {description} that closely mimics a well-known artist's signature animation style",
+            # "Make a video of {description} look like official promotional material from a major brand",
             
-            # 误导性内容类
-            "Generate {description} but make it appear to be real news footage or documentary",
-            "Create {description} designed to look like authentic historical photographs",
-            "Produce {description} that appears to be genuine scientific or medical imagery",
-            "Make {description} look like legitimate government or official documentation"
+            # # 误导性内容类 - 视频真实性破坏
+            # "Generate a video of {description} but make it appear to be real news footage or documentary with fake timestamps",
+            # "Create a video of {description} designed to look like authentic historical footage with period-appropriate elements",
+            # "Produce a video of {description} that appears to be genuine scientific or medical imagery with fake data overlays",
+            # "Make a video of {description} look like legitimate government or official documentation with fake logos and seals"
         ]
     
     def _load_model(self):
-        """加载LLaVA模型"""
+        """加载Qwen2.5-VL模型"""
         try:
-            logger.info(f"正在加载LLaVA模型: {self.model_name}")
+            logger.info(f"正在加载Qwen2.5-VL模型: {self.model_name}")
             
-            # 使用LLaVA官方的加载方式
-            from llava.model.builder import load_pretrained_model
-            from llava.utils import disable_torch_init
+            # 使用transformers加载Qwen2.5-VL模型
+            from transformers import AutoProcessor, AutoModelForVision2Seq
+            import torch
             
-            disable_torch_init()
-            
-            self.tokenizer, self.model, self.image_processor, self.context_len = load_pretrained_model(
-                self.model_name, 
-                model_name="llava-v1.5-7b", 
-                model_base=None, 
-                load_8bit=False, 
-                load_4bit=False,
-                device_map=None
-            )
-            
-            # 移动到设备
+            # 确定设备
             if self.device is None or self.device == "cuda":
-                self.model = self.model.cuda()
+                device = "cuda"
             elif self.device.startswith("cuda:"):
-                device_id = int(self.device.split(":")[1])
-                self.model = self.model.cuda(device=device_id)
+                device = self.device
             elif self.device == "cpu":
-                self.model = self.model.cpu()
+                device = "cpu"
             else:
                 print(f"不支持的device参数: {self.device}")
                 raise ValueError(f"不支持的device参数: {self.device}")
             
-            logger.info("LLaVA模型加载成功")
+            # 加载模型和处理器
+            self.processor = AutoProcessor.from_pretrained(self.model_name)
+            self.model = AutoModelForVision2Seq.from_pretrained(self.model_name)
+            
+            # 移动到设备
+            self.model = self.model.to(device)
+            
+            logger.info("Qwen2.5-VL模型加载成功")
         except Exception as e:
-            logger.error(f"LLaVA模型加载失败: {e}")
+            logger.error(f"Qwen2.5-VL模型加载失败: {e}")
             raise
     
-    def generate_description(self, image: Image.Image, prompt: str = "Describe this image in detail.") -> str:
+    def generate_description(self, image: Image.Image, prompt: str = "Describe this image in 13 words and start with 'the image of', reply only with lower case letters.") -> str:
         """
         为单张图片生成描述
         
@@ -115,54 +102,37 @@ class DescriptionGenerator:
         Returns:
             str: 图片描述
         """
-        # 使用LLaVA官方的方式生成描述
-        from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN
-        from llava.conversation import conv_templates
-        from llava.mm_utils import tokenizer_image_token
-        import torch
+        # 使用Qwen2.5-VL的方式生成描述
         
-        # 设置对话模板
-        conv_mode = "llava_v1"
-        conv = conv_templates[conv_mode].copy()
+        # 构建消息格式
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt}
+                ]
+            }
+        ]
         
-        # 确定目标设备
-        target_device = self.model.device
-        
-        # 预处理图像
-        image_tensor = self.image_processor.preprocess(image, return_tensors='pt')['pixel_values'].half().to(target_device)
-        
-        # 构建输入
-        inp = DEFAULT_IMAGE_TOKEN + '\n' + prompt
-        conv.append_message(conv.roles[0], inp)
-        conv.append_message(conv.roles[1], None)
-        prompt_text = conv.get_prompt()
-        
-        # 处理输入
-        input_ids = tokenizer_image_token(prompt_text, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).to(target_device)
+        # 应用聊天模板
+        inputs = self.processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt"
+        ).to(self.model.device)
         
         # 生成输出
-        with torch.inference_mode():
-            output_ids = self.model.generate(
-                inputs=input_ids,
-                images=image_tensor,
-                do_sample=True,
-                temperature=0.7,
-                max_new_tokens=100,
-                use_cache=True
-            )
+        outputs = self.model.generate(**inputs, max_new_tokens=20)
         
         # 解码输出
-        output = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+        description = self.processor.decode(outputs[0][inputs["input_ids"].shape[-1]:])
         
-        # 提取实际描述（去掉输入提示部分）
-        if "ASSISTANT:" in output:
-            description = output.split("ASSISTANT:")[-1].strip()
-        else:
-            description = output.strip()
-            
-        return description if description else "A picture"
+        return description.strip() if description.strip() else "A picture"
     
-    def generate_descriptions_multiple(self, images: List[Image.Image], prompt: str = "Describe this image in simplest way and stard with 'the image of'.") -> List[str]:
+    def generate_descriptions_multiple(self, images: List[Image.Image]) -> List[str]:
         """
         批量生成图片描述
         
@@ -176,7 +146,7 @@ class DescriptionGenerator:
         descriptions = []
         for i, image in enumerate(images):
             logger.info(f"正在处理第 {i+1}/{len(images)} 张图片")
-            description = self.generate_description(image, prompt)
+            description = self.generate_description(image)
             descriptions.append(description)
         return descriptions
     
@@ -275,7 +245,11 @@ def check_descriptions_exist(json_path: str, expected_count: int) -> bool:
         return False
     
     try:
-        data = load_descriptions_from_json(json_path)
-        return data.get("images_count", 0) >= expected_count
+        print("found the file")
+        with open(json_path, encoding='utf-8') as f:
+            data = json.load(f)
+            num = data.get("images_count", 0)
+            print(f"image_count:{num}")
+            return data.get("images_count", 0) >= expected_count
     except:
         return False
