@@ -94,7 +94,7 @@ class PhotoGuard(ProtectionBase):
                 print(f"Loading model: {self.model_name}")
                 self.diffusion_model = StableDiffusionImg2ImgPipeline.from_pretrained(
                     self.model_name,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                    torch_dtype=torch.float16
                 ).to(self.device)
                 print("Model loaded successfully!")
             except Exception as e:
@@ -116,8 +116,10 @@ class PhotoGuard(ProtectionBase):
             # 计算损失 - 使用VAE encoder（原始PhotoGuard实现）
             if self.diffusion_model is not None:
                 try:
+                    # 转换为float16以匹配模型
+                    X_adv_input = X_adv.half()  
                     # 使用VAE encoder计算损失，与原始PhotoGuard实现一致
-                    vae_output = self.diffusion_model.vae.encode(X_adv)
+                    vae_output = self.diffusion_model.vae.encode(X_adv_input)
                     loss = vae_output.latent_dist.mean.norm()
                 except Exception as e:
                     print(f"Warning: VAE encoder call failed: {e}")
