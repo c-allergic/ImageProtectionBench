@@ -113,13 +113,14 @@ class PhotoGuard(ProtectionBase):
             
             X_adv.requires_grad_(True)
             
-            # 计算损失 - 使用Stable Diffusion模型
+            # 计算损失 - 使用VAE encoder（原始PhotoGuard实现）
             if self.diffusion_model is not None:
                 try:
-                    model_output = self.diffusion_model(X_adv)
-                    loss = model_output.latent_dist.mean.norm()
+                    # 使用VAE encoder计算损失，与原始PhotoGuard实现一致
+                    vae_output = self.diffusion_model.vae.encode(X_adv)
+                    loss = vae_output.latent_dist.mean.norm()
                 except Exception as e:
-                    print(f"Warning: Model call failed: {e}")
+                    print(f"Warning: VAE encoder call failed: {e}")
                     loss = torch.norm(X_adv, p=2)
             else:
                 loss = torch.norm(X_adv, p=2)
