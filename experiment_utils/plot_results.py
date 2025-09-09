@@ -370,51 +370,51 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
             data_range = max_val - min_val
             
             if metric == 'psnr':
-                # PSNR: 通常在20-50之间
+                # PSNR: 通常在0-100之间，但实际数据范围可能更广
                 if data_range < 1.0:  # 差异很小，使用固定范围
                     center = (min_val + max_val) / 2
-                    y_min = max(0, center - 2.0)
-                    y_max = center + 2.0
+                    y_min = max(0, center - 5.0)  # 增加边距
+                    y_max = center + 5.0
                 else:
-                    # 正常差异，使用适度边距
-                    margin = max(1.0, data_range * 0.1)
+                    # 正常差异，使用适度边距，不限制范围
+                    margin = max(2.0, data_range * 0.15)
                     y_min = max(0, min_val - margin)
-                    y_max = max_val + margin
+                    y_max = max_val + margin  # 移除上限限制
                 
                 # 设置合理的刻度间隔
-                tick_step = max(1.0, (y_max - y_min) / 6)
+                tick_step = max(2.0, (y_max - y_min) / 6)
                 ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
                 
             elif metric == 'ssim':
-                # SSIM: 通常在0.8-1.0之间
+                # SSIM: 通常在0-1.0之间，但实际数据可能更低
                 if data_range < 0.01:  # 差异很小，使用固定范围
                     center = (min_val + max_val) / 2
-                    y_min = max(0.7, center - 0.05)
-                    y_max = min(1.0, center + 0.05)
+                    y_min = max(0.0, center - 0.1)  # 允许更低的SSIM值
+                    y_max = min(1.0, center + 0.1)
                 else:
-                    # 正常差异，使用适度边距
-                    margin = max(0.01, data_range * 0.1)
-                    y_min = max(0.7, min_val - margin)
+                    # 正常差异，使用适度边距，不限制最小值
+                    margin = max(0.05, data_range * 0.15)
+                    y_min = max(0.0, min_val - margin)  # 移除0.7的限制
                     y_max = min(1.0, max_val + margin)
                 
                 # 设置合理的刻度间隔
-                tick_step = max(0.02, (y_max - y_min) / 5)
+                tick_step = max(0.05, (y_max - y_min) / 6)
                 ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
                 
             elif metric == 'lpips':
-                # LPIPS: 值越小越好，通常在0-0.5之间
+                # LPIPS: 值越小越好，通常在0-1.0之间，但实际数据可能更高
                 if data_range < 0.01:  # 差异很小，使用固定范围
                     center = (min_val + max_val) / 2
-                    y_min = max(0, center - 0.05)
-                    y_max = min(0.5, center + 0.05)
+                    y_min = max(0, center - 0.1)
+                    y_max = min(1.0, center + 0.1)  # 允许更高的LPIPS值
                 else:
-                    # 正常差异，使用适度边距
-                    margin = max(0.01, data_range * 0.1)
+                    # 正常差异，使用适度边距，不限制最大值
+                    margin = max(0.05, data_range * 0.15)
                     y_min = max(0, min_val - margin)
-                    y_max = min(0.5, max_val + margin)
+                    y_max = min(1.0, max_val + margin)  # 移除0.5的限制
                 
                 # 设置合理的刻度间隔
-                tick_step = max(0.02, (y_max - y_min) / 5)
+                tick_step = max(0.05, (y_max - y_min) / 6)
                 ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
             
             ax.set_ylim(y_min, y_max)
@@ -461,9 +461,9 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
     # 收集所有数值用于计算纵轴范围
     all_values = []
     
-    # 获取理论上限和下限
-    upper_bound = df[upper_bound_key].iloc[0] if upper_bound_key in df.columns else None
-    lower_bound = df[lower_bound_key].iloc[0] if lower_bound_key in df.columns else None
+    # 获取理论上限和下限 - 使用平均值处理多个实验的不同上下限
+    upper_bound = df[upper_bound_key].mean() if upper_bound_key in df.columns else None
+    lower_bound = df[lower_bound_key].mean() if lower_bound_key in df.columns else None
     
     if has_attack and protected_key in df.columns and attacked_key in df.columns:
         # 攻击模式：显示保护后 vs 攻击后
