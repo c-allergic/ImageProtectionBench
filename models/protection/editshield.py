@@ -317,19 +317,3 @@ class EditShield(ProtectionBase):
         protected_image = torch.clamp(protected_image, 0, 1)
         
         return protected_image
-    
-    def get_protection_info(self) -> Dict[str, Any]:
-        """
-        获取保护信息
-        
-        Returns:
-            保护算法信息字典
-        """
-        return {
-            "method": f"EditShield-EOT-{self.transform_type}",
-            "protection_strength": self.protection_strength,
-            "max_steps": self.max_steps,
-            "beta": self.beta,
-            "transform_type": self.transform_type,
-            "description": f"基于EOT攻击算法的图像保护方法，使用{self.transform_type}变换，通过生成相同的扰动来保护图像"
-        }
