@@ -92,13 +92,3 @@ class BaseAttack(ABC):
         
         return torch.stack(attacked_images)
     
-    def get_parameter_ranges(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get valid parameter ranges for this attack
-        
-        Returns:
-            Dictionary mapping parameter names to their valid ranges
-        这个函数应该在攻击开始前调用，用于验证参数是否在有效范围内，protection应该也加上这个函数，需要保证protection的参数在论文所给的有效性之内。
-        """
-        # Default implementation - subclasses should override
-        return {}
