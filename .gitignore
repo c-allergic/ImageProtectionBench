@@ -129,7 +129,7 @@ dmypy.json
 .pyre/
 
 # Project specific
-outputs/
+outputs_old/
 evaluation_results/
 cache/
 *.png

@@ -6,9 +6,10 @@ Evaluates image protection methods against I2V models without attacks.
 """
 
 import os
-# Set CUDA device BEFORE importing torch
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
+if "CUDA_VISIBLE_DEVICES" not in os.environ:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    
 import argparse
 import datetime
 import json
@@ -25,16 +26,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="ImageProtectionBench")
     
     # Dataset parameters
-    parser.add_argument('--dataset', type=str, default="AFHQ-V2", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=150)
+    parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
+    parser.add_argument('--num_samples', type=int, default=1)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
+    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # I2V model parameters
-    parser.add_argument('--i2v_model', type=str, default="Skyreel", 
+    parser.add_argument('--i2v_model', type=str, default="WAN", 
                        choices=["LTX", "WAN", "Skyreel"])
     
     # Evaluation parameters
@@ -53,7 +54,7 @@ if __name__ == '__main__':
     
     # System parameters
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="outputs_AFHQ-V2")
+    parser.add_argument('--output_dir', type=str, default="outputs_WAN_Flickr30k")
     
     args = parser.parse_args()
     
