@@ -357,68 +357,67 @@ class LTXModel(I2VModelBase):
     """LTX模型实现，基于videogen.py中的四步上采样流程"""
     
     def __init__(self, **kwargs):
-        # LTX模型特定配置 - 基于videogen.py
+        # LTX模型特定配置 - 基于成功的ltx.py实现
         model_path = kwargs.get('model_path')
         if model_path is None or model_path == "":
-            self.model_id = "Lightricks/LTX-Video-0.9.7-dev"
+            self.model_id = "Lightricks/LTX-Video-0.9.8-13B-distilled"
             self.upsample_id = "Lightricks/ltxv-spatial-upscaler-0.9.7"
         else:
             self.model_id = model_path
             self.upsample_id = model_path.replace("LTX-Video", "ltxv-spatial-upscaler") if "LTX-Video" in model_path else model_path
             
-        # 设置LTX模型默认参数
-        kwargs.setdefault('frame_rate', 12)
-        kwargs.setdefault('num_frames', 73)  # 补偿预期的帧数损失，期望最终得到60帧
+        # 设置LTX模型默认参数 - 基于成功的ltx.py
+        kwargs.setdefault('frame_rate', 14)
+        kwargs.setdefault('num_frames', 28) 
         kwargs.setdefault('height', 480)
         kwargs.setdefault('width', 832)
-        kwargs.setdefault('guidance_scale', 7)  # 降低引导强度，减少幻觉
-        kwargs.setdefault('num_inference_steps', 50)  # 增加推理步数提高质量
+        kwargs.setdefault('guidance_scale', 7.0)
+        kwargs.setdefault('num_inference_steps', 30)  # 与ltx.py保持一致
         kwargs.setdefault('prompt', '')
-        kwargs.setdefault('negative_prompt', '')
-        kwargs.setdefault('seed', 42)
+        kwargs.setdefault('negative_prompt', 'worst quality, inconsistent motion, blurry, jittery, distorted')
+        kwargs.setdefault('seed', 0)  
+        # LTX特有的高级参数 - 基于成功的ltx.py
+        self.downscale_factor = kwargs.get('downscale_factor', 2/3)  # 与ltx.py保持一致
+        self.denoise_steps = kwargs.get('denoise_steps', 10)  # 与ltx.py保持一致
+        self.denoise_strength = kwargs.get('denoise_strength', 0.4)  # 与ltx.py保持一致
+        self.decode_timestep = kwargs.get('decode_timestep', 0.05)  # 与ltx.py保持一致
+        self.image_cond_noise_scale = kwargs.get('image_cond_noise_scale', 0.025)  # 与ltx.py保持一致
         
-        # LTX特有的高级参数
-        self.downscale_factor = kwargs.get('downscale_factor', 3/4)  # 提高初始分辨率，改善最终清晰度
-        self.denoise_steps = kwargs.get('denoise_steps', 20)  # 增加去噪步数
-        self.denoise_strength = kwargs.get('denoise_strength', 0.35)  # 适中去噪强度，平衡质量和一致性
-        self.decode_timestep = kwargs.get('decode_timestep', 0.02)  # 更低解码时间步，强化帧间一致性
-        self.image_cond_noise_scale = kwargs.get('image_cond_noise_scale', 0.01)  # 最低条件噪声，最大化条件约束
-        self.temporal_consistency_weight = kwargs.get('temporal_consistency_weight', 1.2)  # 时序一致性权重
-        
-        super().__init__(**kwargs)
-        
-        # 初始化两个pipeline
+        # 初始化两个pipeline - 必须在super().__init__之前设置
         self.pipeline = None
         self.pipeline_upsample = None
+        
+        super().__init__(**kwargs)
     
     def _setup_model(self):
-        """加载LTX模型pipeline - 主pipeline和上采样pipeline"""
+        """加载LTX模型pipeline - 基于成功的ltx.py实现"""
         print(f"加载LTX模型: {self.model_id}")
-        
+            
         # 导入LTX相关模块
         from diffusers import LTXConditionPipeline, LTXLatentUpsamplePipeline
         from diffusers.pipelines.ltx.pipeline_ltx_condition import LTXVideoCondition
-        from diffusers.utils import load_video
+        from diffusers.utils import export_to_video, load_image, load_video
         
         print("✅ LTX依赖导入成功")
         
-        # 加载模型
+        # 加载主管道 - 与ltx.py保持一致
         print("正在加载LTX主管道...")
+        print(f"模型ID: {self.model_id}")
         self.pipeline = LTXConditionPipeline.from_pretrained(
             self.model_id, 
-            torch_dtype=torch.bfloat16,
-            cache_dir="/data_sde/lxf/cache/huggingface"
+            torch_dtype=torch.bfloat16
         )
-        print("✅ LTX主管道加载成功")
+        print(f"✅ LTX主管道加载成功，类型: {type(self.pipeline)}")
         
+        # 加载上采样管道 - 与ltx.py保持一致
         print("正在加载LTX上采样管道...")
+        print(f"上采样器ID: {self.upsample_id}")
         self.pipeline_upsample = LTXLatentUpsamplePipeline.from_pretrained(
             self.upsample_id, 
             vae=self.pipeline.vae, 
-            torch_dtype=torch.bfloat16,
-            cache_dir="/data_sde/lxf/cache/huggingface"
+            torch_dtype=torch.bfloat16
         )
-        print("✅ LTX上采样管道加载成功")
+        print(f"✅ LTX上采样管道加载成功，类型: {type(self.pipeline_upsample)}")
         
         # 移动到设备
         print(f"正在将模型移动到设备: {self.device}")
@@ -431,13 +430,15 @@ class LTXModel(I2VModelBase):
         # 保存辅助类和函数的引用
         self.LTXVideoCondition = LTXVideoCondition
         self.load_video = load_video
+        self.export_to_video = export_to_video
         
         self.is_loaded = True
         print(f"✅ LTX模型完全加载成功")
+        
     
     def _round_to_vae_acceptable(self, height: int, width: int) -> tuple:
         """将尺寸调整为VAE可接受的尺寸"""
-        if self.pipeline is None:
+        if self.pipeline is None or self.pipeline_upsample is None:
             raise RuntimeError("LTX模型未正确加载")
         height = height - (height % self.pipeline.vae_spatial_compression_ratio)
         width = width - (width % self.pipeline.vae_spatial_compression_ratio)
@@ -450,8 +451,12 @@ class LTXModel(I2VModelBase):
     ) -> torch.Tensor:
         """使用LTX四步上采样流程生成视频"""
         
-        if not self.is_loaded or self.pipeline is None:
-            raise RuntimeError("LTX模型未正确加载")
+        if not self.is_loaded:
+            raise RuntimeError("LTX模型未正确加载: is_loaded=False")
+        if self.pipeline is None:
+            raise RuntimeError("LTX模型未正确加载: pipeline=None")
+        if self.pipeline_upsample is None:
+            raise RuntimeError("LTX模型未正确加载: pipeline_upsample=None")
         
         prompt = kwargs.get('prompt', self.prompt)
         negative_prompt = kwargs.get('negative_prompt', self.negative_prompt)
@@ -497,23 +502,21 @@ class LTXModel(I2VModelBase):
         guidance_scale: float,
         num_inference_steps: int
     ) -> List[Image.Image]:
-        """LTX四步上采样生成流程"""
+        """LTX四步上采样生成流程 - 基于成功的ltx.py实现"""
         
         start_time = time.time()
         
-        # 准备视频条件
-        if export_to_video is None:
-            raise ImportError("需要安装diffusers包才能使用LTX模型")
-        video = self.load_video(export_to_video([image]))
+        # 准备视频条件 - 与ltx.py保持一致
+        video = self.load_video(self.export_to_video([image]))
         condition = self.LTXVideoCondition(video=video, frame_index=0)
         
-        # Part 1. 在较小分辨率下生成视频
+        # Part 1. 在较小分辨率下生成视频 - 与ltx.py保持一致
         downscaled_height = int(self.height * self.downscale_factor)
         downscaled_width = int(self.width * self.downscale_factor)
         downscaled_height, downscaled_width = self._round_to_vae_acceptable(downscaled_height, downscaled_width)
         
-        # 使用固定种子增强可重现性和一致性
-        generator = torch.Generator().manual_seed(42)
+        # 使用固定种子 - 与ltx.py保持一致
+        generator = torch.Generator().manual_seed(0)
         
         print(f"Part 1: 生成 {downscaled_width}x{downscaled_height} 视频")
         latents = self.pipeline(
@@ -524,12 +527,11 @@ class LTXModel(I2VModelBase):
             height=downscaled_height,
             num_frames=num_frames,
             num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
             generator=generator,
             output_type="latent",
         ).frames
         
-        # Part 2. 使用潜在上采样器放大视频
+        # Part 2. 使用潜在上采样器放大视频 - 与ltx.py保持一致
         upscaled_height, upscaled_width = downscaled_height * 2, downscaled_width * 2
         print(f"Part 2: 上采样到 {upscaled_width}x{upscaled_height}")
         upscaled_latents = self.pipeline_upsample(
@@ -537,7 +539,7 @@ class LTXModel(I2VModelBase):
             output_type="latent"
         ).frames
         
-        # Part 3. 对上采样后的视频进行少量步数的去噪以改善纹理
+        # Part 3. 对上采样后的视频进行少量步数的去噪以改善纹理 - 与ltx.py保持一致
         print(f"Part 3: 去噪优化，强度={self.denoise_strength}")
         video = self.pipeline(
             conditions=[condition],
@@ -548,15 +550,14 @@ class LTXModel(I2VModelBase):
             num_frames=num_frames,
             denoise_strength=self.denoise_strength,
             num_inference_steps=self.denoise_steps,
-            guidance_scale=guidance_scale,
             latents=upscaled_latents,
             decode_timestep=self.decode_timestep,
             image_cond_noise_scale=self.image_cond_noise_scale,
-            generator=generator,  # 使用同一个generator确保一致性
+            generator=generator,
             output_type="pil",
         ).frames[0]
         
-        # Part 4. 将视频缩放到期望的分辨率
+        # Part 4. 将视频缩放到期望的分辨率 - 与ltx.py保持一致
         print(f"Part 4: 缩放到最终分辨率 {self.width}x{self.height}")
         video = [frame.resize((self.width, self.height)) for frame in video]
         

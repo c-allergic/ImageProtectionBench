@@ -12,25 +12,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-def group_experiments_by_dataset(experiment_dirs):
-    """按数据集对实验进行分组"""
-    dataset_groups = {}
-    
-    for exp_dir in experiment_dirs:
-        args_path = os.path.join(exp_dir, "results", "args.json")
-        if not os.path.exists(args_path):
-            print(f"⚠️ 跳过缺少args.json的实验: {os.path.basename(exp_dir)}")
-            continue
-            
-        with open(args_path, 'r') as f:
-            args = json.load(f)
-        
-        dataset = args.get('dataset', 'unknown')
-        if dataset not in dataset_groups:
-            dataset_groups[dataset] = []
-        dataset_groups[dataset].append(exp_dir)
-    
-    return dataset_groups
 
 def _extract_base_args(args_path):
     """提取基准参数"""
@@ -45,6 +26,24 @@ def _extract_base_args(args_path):
         'attack_type': args.get('attack_type', None) if args.get('enable_attack', False) else None,
         'metrics': set(args.get('metrics', []))
     }
+
+def _extract_experiment_info(experiment_dirs):
+    """从实验目录中提取数据集和模型信息"""
+    if not experiment_dirs:
+        return "unknown", "unknown"
+    
+    # 读取第一个实验的配置作为基准
+    first_args_path = os.path.join(experiment_dirs[0], "results", "args.json")
+    if not os.path.exists(first_args_path):
+        return "unknown", "unknown"
+    
+    with open(first_args_path, 'r') as f:
+        args = json.load(f)
+    
+    dataset = args.get('dataset', 'unknown')
+    i2v_model = args.get('i2v_model', 'unknown')
+    
+    return dataset, i2v_model
 
 def _print_validation_baseline(base_args, context=""):
     """打印验证基准信息"""
@@ -137,58 +136,6 @@ def _normalize_values_for_display(values, precision=3):
     
     return normalized
 
-def validate_single_dataset_group(experiment_dirs, dataset_name):
-    """验证单个数据集组内实验的一致性"""
-    if not experiment_dirs:
-        return False, "没有找到实验数据"
-    
-    print(f"验证数据集 {dataset_name} 的 {len(experiment_dirs)} 个实验...")
-    
-    # 读取第一个实验的args作为基准
-    first_args_path = os.path.join(experiment_dirs[0], "results", "args.json")
-    if not os.path.exists(first_args_path):
-        return False, f"未找到基准args文件: {first_args_path}"
-    
-    base_args = _extract_base_args(first_args_path)
-    _print_validation_baseline(base_args, f"数据集 {dataset_name}")
-    
-    # 检查组内实验的一致性
-    inconsistent_experiments = []
-    method_names = []
-    
-    for exp_dir in experiment_dirs:
-        method_name, issues = _check_experiment_consistency(exp_dir, base_args, check_dataset=False)
-        if method_name is None:
-            inconsistent_experiments.append(issues)
-            continue
-        
-        method_names.append(method_name)
-        for issue in issues:
-            inconsistent_experiments.append(f"{method_name}: {issue}")
-    
-    # 检查方法重复和数量
-    method_issues = _check_method_duplicates_and_count(method_names)
-    inconsistent_experiments.extend(method_issues)
-    
-    # 生成验证报告
-    if inconsistent_experiments:
-        print(f"\n⚠️ 数据集 {dataset_name} 发现一致性问题:")
-        for issue in inconsistent_experiments:
-            print(f"  - {issue}")
-        
-        # 检查是否是致命问题
-        fatal_issues = any("I2V模型不一致" in issue or "方法数量不足" in issue 
-                          for issue in inconsistent_experiments)
-        
-        if fatal_issues:
-            print(f"\n❌ 数据集 {dataset_name} 发现致命的一致性问题")
-            return False, f"数据集 {dataset_name} 实验配置存在致命差异"
-        else:
-            print(f"\n⚠️ 数据集 {dataset_name} 存在一致性问题，但可以继续处理")
-            return True, f"数据集 {dataset_name} 发现 {len(inconsistent_experiments)} 个一致性问题"
-    else:
-        print(f"✅ 数据集 {dataset_name} 所有实验一致性检查通过")
-        return True, f"数据集 {dataset_name} 实验配置一致"
 
 def validate_batch_experiment_consistency(experiment_dirs):
     """验证批次实验结果的一致性（基于args.json文件）"""
@@ -197,17 +144,7 @@ def validate_batch_experiment_consistency(experiment_dirs):
     
     print(f"验证 {len(experiment_dirs)} 个实验的一致性...")
     
-    # 首先按数据集分组
-    dataset_groups = group_experiments_by_dataset(experiment_dirs)
-    
-    if len(dataset_groups) > 1:
-        print(f"⚠️ 检测到 {len(dataset_groups)} 个不同的数据集:")
-        for dataset, dirs in dataset_groups.items():
-            print(f"  - {dataset}: {len(dirs)} 个实验")
-        print("将对每个数据集分别进行验证和可视化...")
-        return True, f"检测到多数据集，将分组处理 ({len(dataset_groups)} 个数据集)"
-    
-    # 单数据集的原有逻辑
+    # 读取第一个实验的args作为基准
     first_args_path = os.path.join(experiment_dirs[0], "results", "args.json")
     if not os.path.exists(first_args_path):
         return False, f"未找到基准args文件: {first_args_path}"
@@ -844,68 +781,6 @@ def plot_time_metrics(df, methods, output_dir):
     plt.close()
     print(f"时间指标图已保存: {os.path.join(output_dir, 'time_metrics.png')}")
 
-def generate_dataset_group_visualizations(experiment_dirs, dataset_name, output_dir):
-    """为单个数据集组生成可视化图表"""
-    try:
-        print(f"\n为数据集 {dataset_name} 生成可视化图表...")
-        
-        # 读取数据集组的所有数据
-        data = []
-        has_attack = False
-        
-        for exp_dir in experiment_dirs:
-            results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
-            if not os.path.exists(results_path):
-                print(f"⚠️ 跳过缺少结果文件的实验: {os.path.basename(exp_dir)}")
-                continue
-                
-            with open(results_path, 'r') as f:
-                result = json.load(f)
-                
-                # 准备DataFrame数据
-                row = {'method': result['method']}
-                row.update(result['aggregated'])
-                if 'time' in result:
-                    row.update(result['time'])
-                
-                # 检查是否有攻击数据
-                if any('attacked_' in key for key in result['aggregated'].keys()):
-                    has_attack = True
-                
-                data.append(row)
-        
-        if not data:
-            print(f"❌ 数据集 {dataset_name} 没有有效的实验数据")
-            return False
-        
-        # 创建DataFrame
-        df = pd.DataFrame(data)
-        methods = df['method'].tolist()
-        
-        print(f"数据集 {dataset_name}: {len(methods)} 个方法 - {methods}")
-        print(f"包含攻击数据: {has_attack}")
-        
-        # 创建数据集特定的输出目录
-        dataset_output_dir = os.path.join(output_dir, dataset_name)
-        os.makedirs(dataset_output_dir, exist_ok=True)
-        
-        # 生成图表
-        plot_image_metrics(df, methods, has_attack, dataset_output_dir)
-        plot_clip_scores(df, methods, has_attack, dataset_output_dir)
-        plot_vbench_metrics(df, methods, has_attack, dataset_output_dir)
-        plot_time_metrics(df, methods, dataset_output_dir)
-        
-        if has_attack:
-            plot_attack_effectiveness(df, methods, dataset_output_dir)
-        
-        print(f"✅ 数据集 {dataset_name} 可视化图表生成完成: {dataset_output_dir}")
-        return True
-        
-    except Exception as e:
-        print(f"❌ 数据集 {dataset_name} 生成可视化图表时出错: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
 
 def _load_experiment_data(experiment_dirs):
     """从实验目录加载数据"""
@@ -952,11 +827,11 @@ def _generate_plots(df, methods, has_attack, output_dir):
 
 def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: str = None) -> bool:
     """
-    为一批实验结果生成对比可视化图表，支持多数据集分组处理
+    为一批实验结果生成对比可视化图表
     
     Args:
         output_base_dir: 输出基目录，包含多个实验文件夹
-        output_dir: 可视化图表输出目录（可选，默认为output_base_dir/comparison_charts）
+        output_dir: 可视化图表输出目录
         
     Returns:
         bool: 是否成功生成图表
@@ -983,85 +858,36 @@ def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: 
         
         # 确定输出目录
         if output_dir is None:
-            output_dir = os.path.join(output_base_dir, 'comparison_charts')
+            # 提取数据集和模型信息
+            dataset, i2v_model = _extract_experiment_info(experiment_dirs)
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.join(output_base_dir, f"{dataset}_{i2v_model}")
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # 按数据集分组
-        dataset_groups = group_experiments_by_dataset(experiment_dirs)
+        # 加载数据
+        data, has_attack = _load_experiment_data(experiment_dirs)
         
-        if len(dataset_groups) > 1:
-            # 多数据集情况：为每个数据集生成单独的图表
-            print(f"\n检测到 {len(dataset_groups)} 个不同的数据集，将分别生成图表:")
-            
-            success_count = 0
-            total_datasets = len(dataset_groups)
-            
-            _setup_matplotlib_style()
-            
-            for dataset_name, dirs in dataset_groups.items():
-                print(f"\n{'-'*40}")
-                print(f"处理数据集: {dataset_name}")
-                print(f"{'-'*40}")
-                
-                # 验证数据集组内一致性
-                is_valid, message = validate_single_dataset_group(dirs, dataset_name)
-                if not is_valid:
-                    print(f"❌ 数据集 {dataset_name} 验证失败: {message}")
-                    continue
-                
-                # 生成数据集组的可视化图表
-                if generate_dataset_group_visualizations(dirs, dataset_name, output_dir):
-                    success_count += 1
-            
-            if success_count > 0:
-                print(f"\n🎉 多数据集批量对比可视化图表生成完成!")
-                print(f"📁 图表保存位置: {os.path.abspath(output_dir)}")
-                print(f"✅ 成功处理 {success_count}/{total_datasets} 个数据集")
-                
-                # 显示生成的目录结构
-                print(f"\n生成的数据集图表目录:")
-                for dataset_name in dataset_groups.keys():
-                    dataset_dir = os.path.join(output_dir, dataset_name)
-                    if os.path.exists(dataset_dir):
-                        print(f"  - {dataset_name}/")
-                        print(f"    ├── image_metrics.png")
-                        print(f"    ├── clip_scores.png")
-                        print(f"    ├── vbench_metrics.png")
-                        print(f"    └── time_metrics.png")
-                
-                return success_count == total_datasets
-            else:
-                print(f"❌ 所有数据集处理都失败了")
-                return False
+        if not data:
+            print("❌ 没有有效的实验数据")
+            return False
         
-        else:
-            # 单数据集情况
-            dataset_name = list(dataset_groups.keys())[0]
-            print(f"单数据集模式: {dataset_name}")
-            
-            # 加载数据
-            data, has_attack = _load_experiment_data(experiment_dirs)
-            
-            if not data:
-                print("❌ 没有有效的实验数据")
-                return False
-            
-            # 创建DataFrame
-            df = pd.DataFrame(data)
-            methods = df['method'].tolist()
-            
-            _setup_matplotlib_style()
-            
-            print(f"检测到 {len(methods)} 个方法: {methods}")
-            print(f"包含攻击数据: {has_attack}")
-            print(f"对比图表输出目录: {output_dir}")
-            
-            # 生成对比图表
-            _generate_plots(df, methods, has_attack, output_dir)
-            
-            print(f"单数据集对比可视化图表生成完成: {output_dir}")
-            return True
+        # 创建DataFrame
+        df = pd.DataFrame(data)
+        methods = df['method'].tolist()
+        
+        _setup_matplotlib_style()
+        
+        print(f"检测到 {len(methods)} 个方法: {methods}")
+        print(f"包含攻击数据: {has_attack}")
+        print(f"对比图表输出目录: {output_dir}")
+        
+        # 生成对比图表
+        _generate_plots(df, methods, has_attack, output_dir)
+        
+        print(f"对比可视化图表生成完成: {output_dir}")
+        return True
         
     except Exception as e:
         print(f"生成批量对比可视化图表时出错: {e}")
@@ -1081,7 +907,7 @@ def main():
     print("="*60)
     
     # 搜索实验目录
-    output_base_dir = "outputs"
+    output_base_dir = "outputs_skyreels_AFHQ-V2"
     if not os.path.exists(output_base_dir):
         print(f"❌ 未找到输出目录: {output_base_dir}")
         return
@@ -1108,20 +934,7 @@ def main():
     for exp_dir in experiment_dirs:
         print(f"  - {os.path.basename(exp_dir)}")
     
-    # 按数据集分组并显示信息
-    print(f"\n{'-'*40}")
-    print("分析实验数据集分布...")
-    print(f"{'-'*40}")
-    
-    dataset_groups = group_experiments_by_dataset(experiment_dirs)
-    
-    print(f"检测到 {len(dataset_groups)} 个数据集:")
-    for dataset_name, dirs in dataset_groups.items():
-        print(f"  - {dataset_name}: {len(dirs)} 个实验")
-        for exp_dir in dirs:
-            print(f"    └── {os.path.basename(exp_dir)}")
-    
-    # 验证实验批次一致性（已内置数据集分组处理）
+    # 验证实验批次一致性
     print(f"\n{'-'*40}")
     print("验证实验一致性...")
     print(f"{'-'*40}")
@@ -1135,19 +948,16 @@ def main():
     
     print(f"\n✅ 验证通过: {message}")
     
-    # 生成带时间戳的输出目录
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    if len(dataset_groups) > 1:
-        output_dir = os.path.join("figs", f"multi_dataset_comparison_{timestamp}")
-    else:
-        dataset_name = list(dataset_groups.keys())[0]
-        output_dir = os.path.join("figs", f"{dataset_name}_comparison_{timestamp}")
+    # 提取数据集和模型信息
+    dataset, i2v_model = _extract_experiment_info(experiment_dirs)
+    print(f"检测到实验配置: 数据集={dataset}, 模型={i2v_model}")
     
+    # 生成包含数据集和模型信息的输出目录
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join("figs", f"{dataset}_{i2v_model}")
+        
     print(f"\n{'-'*40}")
-    if len(dataset_groups) > 1:
-        print("生成多数据集分组对比可视化图表...")
-    else:
-        print("生成单数据集对比可视化图表...")
+    print("生成对比可视化图表...")
     print(f"{'-'*40}")
     print(f"输出目录: {output_dir}")
     
@@ -1155,57 +965,28 @@ def main():
     success = generate_batch_visualizations(output_base_dir, output_dir)
     
     if success:
-        if len(dataset_groups) > 1:
-            print(f"\n🎉 多数据集分组对比可视化图表生成成功!")
-        else:
-            print(f"\n🎉 单数据集对比可视化图表生成成功!")
-        
+        print(f"\n🎉 对比可视化图表生成成功!")
         print(f"📁 图表保存位置: {os.path.abspath(output_dir)}")
         
-        if len(dataset_groups) > 1:
-            print(f"\n为每个数据集生成的图表目录:")
-            for dataset_name in dataset_groups.keys():
-                print(f"  - {dataset_name}/")
-                print(f"    ├── image_metrics.png: 图像质量指标对比")
-                print(f"    ├── clip_scores.png: CLIP语义相似度对比")
-                print(f"    ├── vbench_metrics.png: VBench视频质量指标对比")
-                print(f"    ├── time_metrics.png: 处理时间对比")
-                
-                # 检查是否有攻击数据
-                has_attack = False
-                for exp_dir in dataset_groups[dataset_name]:
-                    results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
-                    if os.path.exists(results_path):
-                        with open(results_path, 'r') as f:
-                            result = json.load(f)
-                        if any('attacked_' in key for key in result['aggregated'].keys()):
-                            has_attack = True
-                            break
-                
-                if has_attack:
-                    print(f"    └── attack_effectiveness.png: 攻击效果分析")
-                else:
-                    print(f"    └── (无攻击数据)")
-        else:
-            print(f"\n生成的图表包括:")
-            print(f"  - image_metrics.png: 图像质量指标对比")
-            print(f"  - clip_scores.png: CLIP语义相似度对比")
-            print(f"  - vbench_metrics.png: VBench视频质量指标对比")
-            print(f"  - time_metrics.png: 处理时间对比")
-            
-            # 检查是否有攻击数据
-            pattern = os.path.join(output_base_dir, "*/results/benchmark_results.json")
-            json_files = glob.glob(pattern)
-            has_attack = False
-            for file_path in json_files:
-                with open(file_path, 'r') as f:
-                    result = json.load(f)
-                if any('attacked_' in key for key in result['aggregated'].keys()):
-                    has_attack = True
-                    break
-            
-            if has_attack:
-                print(f"  - attack_effectiveness.png: 攻击效果分析")
+        print(f"\n生成的图表包括:")
+        print(f"  - image_metrics.png: 图像质量指标对比")
+        print(f"  - clip_scores.png: CLIP语义相似度对比")
+        print(f"  - vbench_metrics.png: VBench视频质量指标对比")
+        print(f"  - time_metrics.png: 处理时间对比")
+        
+        # 检查是否有攻击数据
+        pattern = os.path.join(output_base_dir, "*/results/benchmark_results.json")
+        json_files = glob.glob(pattern)
+        has_attack = False
+        for file_path in json_files:
+            with open(file_path, 'r') as f:
+                result = json.load(f)
+            if any('attacked_' in key for key in result['aggregated'].keys()):
+                has_attack = True
+                break
+        
+        if has_attack:
+            print(f"  - attack_effectiveness.png: 攻击效果分析")
             
     else:
         print(f"\n❌ 对比可视化图表生成失败")

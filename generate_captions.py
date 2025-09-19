@@ -20,8 +20,8 @@ def main():
     num_samples = 150
     device = "cuda:3"
     
-    print(f"加载AFHQ-V2图像")
-    images, _ = load_dataset("AFHQ-V2", num_samples, data_path, generate_descriptions=False, device=device)
+    print(f"加载TIP-I2V图像")
+    images, _ = load_dataset("LHQ", num_samples, data_path, generate_descriptions=False, device=device)
     
     if not images:
         print("未找到图像，请先运行数据加载脚本")
@@ -37,7 +37,7 @@ def main():
     output_dir = f"/data_sde/lxf/ImageProtectionBench/data/descriptions"
     os.makedirs(output_dir, exist_ok=True)
     
-    output_file = os.path.join(output_dir, "test_afhq_descriptions.json")
+    output_file = os.path.join(output_dir, "lhq_descriptions.json")
     with open(output_file, "w", encoding="utf-8") as f:
         import json
         json.dump(descriptions_dict, f, ensure_ascii=False, indent=2)
