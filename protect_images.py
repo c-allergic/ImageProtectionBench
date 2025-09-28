@@ -6,7 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -124,12 +124,12 @@ def main():
     parser = argparse.ArgumentParser(description="简洁的图片保护脚本")
     
     # 数据集参数
-    parser.add_argument('--dataset', type=str, default="AFHQ-V2", choices=DATASETS)
+    parser.add_argument('--dataset', type=str, default="LHQ", choices=DATASETS)
     parser.add_argument('--num_samples', type=int, default=150)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # 保护方法参数
-    parser.add_argument('--protection_method', type=str, default="Mist", 
+    parser.add_argument('--protection_method', type=str, default="I2VGuard", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # 处理参数
@@ -137,7 +137,7 @@ def main():
     
     # 系统参数
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="outputs_LTX_AFHQ-V2")
+    parser.add_argument('--output_dir', type=str, default="outputs_LTX_LHQ")
     
     args = parser.parse_args()
     

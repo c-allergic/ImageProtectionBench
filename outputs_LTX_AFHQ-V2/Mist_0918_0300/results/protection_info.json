@@ -1,0 +1,8 @@
+{
+    "method": "Mist",
+    "dataset": "AFHQ-V2",
+    "num_samples": 150,
+    "batch_size": 10,
+    "device": "cuda",
+    "timestamp": "2025-09-18T05:47:46.536935"
+}

@@ -1,0 +1,23 @@
+{
+    "method": "Unknown",
+    "aggregated": {
+        "protected_psnr": 43.802742828033416,
+        "protected_ssim": 0.9821593169371287,
+        "protected_lpips": 0.03975534591668596,
+        "protected_clip_score": 0.9489769531249999,
+        "clip_upper_bound": 1.0002910156250002,
+        "clip_lower_bound": 0.6857343750000001,
+        "original_subject_consistency": 0.8973870519082993,
+        "original_motion_smoothness": 0.980601478300284,
+        "original_aesthetic_quality": 0.49695454994837446,
+        "original_imaging_quality": 0.6180672373453775,
+        "protected_subject_consistency": 0.8912128256861536,
+        "protected_motion_smoothness": 0.9799304503490988,
+        "protected_aesthetic_quality": 0.49244338909784957,
+        "protected_imaging_quality": 0.6177272815678914,
+        "diff_subject_consistency": 0.0061742262221458856,
+        "diff_motion_smoothness": 0.0006710279511852147,
+        "diff_aesthetic_quality": 0.004511160850524902,
+        "diff_imaging_quality": 0.00033995577748616277
+    }
+}

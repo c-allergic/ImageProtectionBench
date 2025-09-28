@@ -1,0 +1,7 @@
+{
+    "input_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_LHQ/RandomNoise_0920_0411",
+    "output_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_LHQ/RandomNoise_0920_0411",
+    "i2v_model": "LTX",
+    "device": "cuda",
+    "timestamp": "2025-09-20T04:14:38.946581"
+}

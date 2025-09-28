@@ -1,0 +1,28 @@
+{
+    "method": "EditShield",
+    "aggregated": {
+        "protected_psnr": 36.32013385700922,
+        "protected_ssim": 0.902279679775238,
+        "protected_lpips": 0.2558603370934725,
+        "protected_clip_score": 0.8871359375000002,
+        "clip_upper_bound": 1.0002910156250002,
+        "clip_lower_bound": 0.7207734374999999,
+        "original_subject_consistency": 0.8177985526036676,
+        "original_motion_smoothness": 0.9666066580823391,
+        "original_aesthetic_quality": 0.5103497264782587,
+        "original_imaging_quality": 0.6697718756612141,
+        "protected_subject_consistency": 0.8407626271330647,
+        "protected_motion_smoothness": 0.9747382697526858,
+        "protected_aesthetic_quality": 0.4843305337429047,
+        "protected_imaging_quality": 0.657825546101888,
+        "diff_subject_consistency": -0.022964074529396982,
+        "diff_motion_smoothness": -0.008131611670346683,
+        "diff_aesthetic_quality": 0.02601919273535411,
+        "diff_imaging_quality": 0.01194632955932618
+    },
+    "time": {
+        "total_protection_time": 432.0106248855591,
+        "total_images_processed": 150,
+        "time_per_image": 2.880070832570394
+    }
+}
