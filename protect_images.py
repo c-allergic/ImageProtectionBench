@@ -6,7 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 import argparse
 import datetime
@@ -16,6 +16,8 @@ import time
 
 from data import load_dataset, transform, pt_to_pil, DATASETS
 from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
+from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
+                     ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
 from experiment_utils import setup_output_directories
 
 
@@ -39,15 +41,43 @@ def initialize_protection_method(method_name: str, device: str):
     return protection_method
 
 
-def protect_images_batch(images, protection_method, batch_size=10):
+def initialize_attack_method(attack_type: str, device: str):
+    """初始化攻击方法，参照benchmark.py"""
+    print(f"Initializing attack method {attack_type}")
+    if attack_type == "rotation":
+        attack_method = RotationAttack(device=device)
+    elif attack_type == "resizedcrop":
+        attack_method = ResizedCropAttack(device=device)
+    elif attack_type == "erasing":
+        attack_method = ErasingAttack(device=device)
+    elif attack_type == "brightness":
+        attack_method = BrightnessAttack(device=device)
+    elif attack_type == "contrast":
+        attack_method = ContrastAttack(device=device)
+    elif attack_type == "blurring":
+        attack_method = BlurringAttack(device=device)
+    elif attack_type == "noise":
+        attack_method = NoiseAttack(device=device)
+    elif attack_type == "saltpepper":
+        attack_method = SaltPepperAttack(device=device)
+    elif attack_type == "compression":
+        attack_method = CompressionAttack(device=device)
+    else:
+        raise ValueError(f"Unknown attack type: {attack_type}")
+    return attack_method
+
+
+def protect_images_batch(images, protection_method, batch_size=10, attack_method=None):
     """批量保护图片，参照experiment.py的批次处理逻辑"""
     total_images = len(images)
-    print(f"开始保护 {total_images} 张图片，使用批次处理模式，每批处理 {batch_size} 张图片")
+    attack_info = f"，攻击方法: {attack_method.__class__.__name__}" if attack_method else "，无攻击"
+    print(f"开始保护 {total_images} 张图片，使用批次处理模式，每批处理 {batch_size} 张图片{attack_info}")
     
     # 时间统计
     total_protection_time = 0.0
     total_images_processed = 0
     all_protected_images = []
+    all_attacked_images = []
     
     # 分批处理
     for i in range(0, total_images, batch_size):
@@ -67,21 +97,35 @@ def protect_images_batch(images, protection_method, batch_size=10):
         # 应用保护
         start_time = time.time()
         protected_tensors = protection_method.protect_multiple(original_tensors)
-        elapsed_time = time.time() - start_time
+        protection_elapsed = time.time() - start_time
         
         batch_size_actual = original_tensors.size(0)
-        total_protection_time += elapsed_time
+        total_protection_time += protection_elapsed
         total_images_processed += batch_size_actual
         
-        print(f"保护操作完成: 处理 {batch_size_actual} 张图片，耗时 {elapsed_time:.4f}秒，平均 {elapsed_time/batch_size_actual:.4f}秒/图片")
+        print(f"保护操作完成: 处理 {batch_size_actual} 张图片，耗时 {protection_elapsed:.4f}秒，平均 {protection_elapsed/batch_size_actual:.4f}秒/图片")
+        
+        # 应用攻击 (如果启用)
+        attacked_tensors = None
+        if attack_method is not None:
+            print("应用攻击变换...")
+            attacked_tensors = attack_method.attack_multiple(protected_tensors)
+            print("攻击变换完成")
         
         # 转换回PIL格式
         for j in range(protected_tensors.size(0)):
             protected_pil = pt_to_pil(protected_tensors[j])
             all_protected_images.append(protected_pil)
+            
+            # 如果有攻击结果，也转换为PIL
+            if attacked_tensors is not None:
+                attacked_pil = pt_to_pil(attacked_tensors[j])
+                all_attacked_images.append(attacked_pil)
         
         # 清理显存
         del original_tensors, protected_tensors
+        if attacked_tensors is not None:
+            del attacked_tensors
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
@@ -89,6 +133,10 @@ def protect_images_batch(images, protection_method, batch_size=10):
     
     # 准备返回结果
     result = {'protected_images': all_protected_images}
+    
+    # 如果有攻击结果，也返回
+    if all_attacked_images:
+        result['attacked_images'] = all_attacked_images
     
     time_per_image = total_protection_time / total_images_processed if total_images_processed > 0 else 0
     result['time_stats'] = {
@@ -100,7 +148,7 @@ def protect_images_batch(images, protection_method, batch_size=10):
     return result
 
 
-def save_protected_images(original_images, protected_images, images_dir):
+def save_protected_images(original_images, protected_images, images_dir, attacked_images=None):
     """保存保护后的图片"""
     print(f"保存图片到: {images_dir}")
     
@@ -113,10 +161,20 @@ def save_protected_images(original_images, protected_images, images_dir):
         prot_path = os.path.join(images_dir, f"protected_{i:03d}.png")
         prot_img.save(prot_path)
         
+        # 保存攻击后的图片（如果有）
+        if attacked_images and i < len(attacked_images):
+            attack_path = os.path.join(images_dir, f"attacked_{i:03d}.png")
+            attacked_images[i].save(attack_path)
+        
         if i < 5 or i % 50 == 0:  # 只打印前5个和每50个的进度
-            print(f"  图片 {i}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}")
+            attack_info = f" & {os.path.basename(attack_path)}" if attacked_images and i < len(attacked_images) else ""
+            print(f"  图片 {i}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}{attack_info}")
     
-    print(f"总共保存了 {len(protected_images)} 对图片")
+    image_count = len(protected_images)
+    if attacked_images:
+        print(f"总共保存了 {image_count} 组图片 (原始 + 保护 + 攻击)")
+    else:
+        print(f"总共保存了 {image_count} 对图片 (原始 + 保护)")
 
 
 def main():
@@ -125,19 +183,27 @@ def main():
     
     # 数据集参数
     parser.add_argument('--dataset', type=str, default="LHQ", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=150)
+    parser.add_argument('--num_samples', type=int, default=150) 
     parser.add_argument('--data_path', type=str, default="./data")
     
     # 保护方法参数
-    parser.add_argument('--protection_method', type=str, default="I2VGuard", 
+    parser.add_argument('--protection_method', type=str, default="Mist", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
+    
+    # 攻击参数
+    parser.add_argument('--enable_attack', default=True, action='store_true', 
+                       help="启用攻击变换")
+    parser.add_argument('--attack_type', type=str, default="compression",
+                       choices=["rotation", "resizedcrop", "erasing", "brightness", "contrast", 
+                               "blurring", "noise", "saltpepper", "compression"],
+                       help="攻击类型")
     
     # 处理参数
     parser.add_argument('--batch_size', type=int, default=10)
     
     # 系统参数
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="outputs_LTX_LHQ")
+    parser.add_argument('--output_dir', type=str, default="EXP_LTX_LHQ")
     
     args = parser.parse_args()
     
@@ -147,6 +213,9 @@ def main():
     print(f"数据集: {args.dataset}")
     print(f"图片数量: {args.num_samples}")
     print(f"保护方法: {args.protection_method}")
+    print(f"启用攻击: {'是' if args.enable_attack else '否'}")
+    if args.enable_attack:
+        print(f"攻击类型: {args.attack_type}")
     print(f"批次大小: {args.batch_size}")
     print(f"计算设备: {args.device}")
     print(f"输出目录: {args.output_dir}")
@@ -174,17 +243,24 @@ def main():
     # 初始化保护方法，参照benchmark.py
     protection_method = initialize_protection_method(args.protection_method, device)
     
+    # 初始化攻击方法 (如果启用)
+    attack_method = None
+    if args.enable_attack:
+        attack_method = initialize_attack_method(args.attack_type, device)
+    
     # 保护图片
     print("\n开始保护图片...")
     result = protect_images_batch(
         data, 
         protection_method, 
         batch_size=args.batch_size,
+        attack_method=attack_method
     )
     
     # 保存保护后的图片
     print("\n保存保护后的图片...")
-    save_protected_images(data, result['protected_images'], output_dirs['images'])
+    attacked_images = result.get('attacked_images', None)
+    save_protected_images(data, result['protected_images'], output_dirs['images'], attacked_images)
     
     # 保存时间统计（如果启用）
     if 'time_stats' in result:
@@ -200,6 +276,8 @@ def main():
         'num_samples': args.num_samples,
         'batch_size': args.batch_size,
         'device': device,
+        'enable_attack': args.enable_attack,
+        'attack_type': args.attack_type if args.enable_attack else None,
         'timestamp': datetime.datetime.now().isoformat()
     }
     
@@ -210,7 +288,11 @@ def main():
     print("\n" + "=" * 60)
     print("图片保护完成!")
     print(f"保护方法: {args.protection_method}")
+    if args.enable_attack:
+        print(f"攻击方法: {args.attack_type}")
     print(f"处理图片数: {len(result['protected_images'])}")
+    if attacked_images:
+        print(f"攻击图片数: {len(attacked_images)}")
     print(f"输出目录: {output_dirs['experiment']}")
     print("=" * 60)
 

@@ -1,0 +1,10 @@
+{
+    "method": "Mist",
+    "dataset": "Flickr30k",
+    "num_samples": 150,
+    "batch_size": 10,
+    "device": "cuda",
+    "enable_attack": true,
+    "attack_type": "compression",
+    "timestamp": "2025-09-29T09:41:11.290982"
+}
