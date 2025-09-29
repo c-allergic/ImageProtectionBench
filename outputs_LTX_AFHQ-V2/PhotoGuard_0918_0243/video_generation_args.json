@@ -1,0 +1,7 @@
+{
+    "input_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_AFHQ-V2/PhotoGuard_0918_0243",
+    "output_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_AFHQ-V2/PhotoGuard_0918_0243",
+    "i2v_model": "LTX",
+    "device": "cuda",
+    "timestamp": "2025-09-18T06:05:38.383029"
+}

@@ -1,0 +1,28 @@
+{
+    "method": "Mist",
+    "aggregated": {
+        "protected_psnr": 26.724872459533458,
+        "protected_ssim": 0.721196470061938,
+        "protected_lpips": 0.3457912145058314,
+        "protected_clip_score": 0.8850397135416667,
+        "clip_upper_bound": 1.000263671875,
+        "clip_lower_bound": 0.5626611328125,
+        "original_subject_consistency": 0.9113419323699135,
+        "original_motion_smoothness": 0.9752853559558765,
+        "original_aesthetic_quality": 0.49895621657371525,
+        "original_imaging_quality": 0.623417662806193,
+        "protected_subject_consistency": 0.8832301036568565,
+        "protected_motion_smoothness": 0.9773956112077801,
+        "protected_aesthetic_quality": 0.4980176907777787,
+        "protected_imaging_quality": 0.6154015821126303,
+        "diff_subject_consistency": 0.028111828713056945,
+        "diff_motion_smoothness": -0.002110255251903415,
+        "diff_aesthetic_quality": 0.0009385257959365844,
+        "diff_imaging_quality": 0.00801608069356282
+    },
+    "time":{
+        "total_protection_time": 7611.37340927124,
+        "total_images_processed": 150,
+        "time_per_image": 50.742489395141604
+    }
+}

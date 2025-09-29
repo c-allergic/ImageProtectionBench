@@ -1,0 +1,28 @@
+{
+    "method": "PhotoGuard",
+    "aggregated": {
+        "protected_psnr": 25.741416930690484,
+        "protected_ssim": 0.6094067456324895,
+        "protected_lpips": 0.5148055919011434,
+        "protected_clip_score": 0.9060217366666667,
+        "clip_upper_bound": 1.0001983642578125,
+        "clip_lower_bound": 0.7876495361328125,
+        "original_subject_consistency": 0.8977406334315348,
+        "original_motion_smoothness": 0.9624661021523326,
+        "original_aesthetic_quality": 0.4808828646827627,
+        "original_imaging_quality": 0.662516842115049,
+        "protected_subject_consistency": 0.9171052645704203,
+        "protected_motion_smoothness": 0.9743089268141704,
+        "protected_aesthetic_quality": 0.49552843109325123,
+        "protected_imaging_quality": 0.6738653709338152,
+        "diff_subject_consistency": -0.01936463113888569,
+        "diff_motion_smoothness": -0.01184282466183771,
+        "diff_aesthetic_quality": -0.014645566410488552,
+        "diff_imaging_quality": -0.011348528818766272
+    },
+    "time":{
+        "total_protection_time": 7310.482536792755,
+        "total_images_processed": 150,
+        "time_per_image": 48.73655024528503
+    }
+}

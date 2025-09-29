@@ -1,0 +1,10 @@
+{
+    "method": "EditShield",
+    "dataset": "LHQ",
+    "num_samples": 150,
+    "batch_size": 10,
+    "device": "cuda",
+    "enable_attack": true,
+    "attack_type": "compression",
+    "timestamp": "2025-09-28T15:30:33.536309"
+}

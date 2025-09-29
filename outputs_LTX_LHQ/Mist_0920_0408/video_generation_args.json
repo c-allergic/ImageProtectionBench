@@ -1,0 +1,7 @@
+{
+    "input_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_LHQ/Mist_0920_0408",
+    "output_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_LHQ/Mist_0920_0408",
+    "i2v_model": "LTX",
+    "device": "cuda",
+    "timestamp": "2025-09-20T17:04:36.187080"
+}

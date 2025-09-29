@@ -8,7 +8,7 @@ Evaluates image protection methods against I2V models without attacks.
 import os
 
 if "CUDA_VISIBLE_DEVICES" not in os.environ:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
     
 import argparse
 import datetime
@@ -16,7 +16,7 @@ import json
 import torch
 
 from data import load_dataset, DATASETS
-from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
+from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise, ExpGuard
 from models.i2v import WANModel, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
@@ -27,15 +27,15 @@ if __name__ == '__main__':
     
     # Dataset parameters
     parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=1)
+    parser.add_argument('--num_samples', type=int, default=150)
     parser.add_argument('--data_path', type=str, default="./data")
     
     # Protection method parameters
-    parser.add_argument('--protection_method', type=str, default="RandomNoise", 
-                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
+    parser.add_argument('--protection_method', type=str, default="PhotoGuard", 
+                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise", "ExpGuard"])
     
     # I2V model parameters
-    parser.add_argument('--i2v_model', type=str, default="WAN", 
+    parser.add_argument('--i2v_model', type=str, default="Skyreel", 
                        choices=["LTX", "WAN", "Skyreel"])
     
     # Evaluation parameters
@@ -43,18 +43,16 @@ if __name__ == '__main__':
                        choices=["psnr", "ssim", "lpips", "clip", "vbench", "time"])
     
     # Attack parameters
-    parser.add_argument('--enable_attack',default=False, action='store_true', 
+    parser.add_argument('--enable_attack',default=True, action='store_true', 
                        help="启用攻击变换")
-    parser.add_argument('--attack_type', type=str, default="rotation",
+    parser.add_argument('--attack_type', type=str, default="compression",
                        choices=["rotation", "resizedcrop", "erasing", "brightness", "contrast", 
                                "blurring", "noise", "saltpepper", "compression"],
-                       help="攻击类型")
-    parser.add_argument('--attack_strength', type=float, default=0.5,
-                       help="攻击强度 (0.0-1.0)")
+                       help="攻击类型") 
     
     # System parameters
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="outputs_WAN_Flickr30k")
+    parser.add_argument('--output_dir', type=str, default="EXP_Skyreel_Flickr30k")
     
     args = parser.parse_args()
     
@@ -95,6 +93,8 @@ if __name__ == '__main__':
         protection_method = VGMShield(device=device)
     elif args.protection_method == "RandomNoise":
         protection_method = RandomNoise(device=device)
+    elif args.protection_method == "ExpGuard":
+        protection_method = ExpGuard(device=device)
     else:
         raise ValueError(f"Unknown protection method: {args.protection_method}")
     
@@ -112,7 +112,7 @@ if __name__ == '__main__':
     # Initialize attack method (if enabled)
     attack_method = None
     if args.enable_attack:
-        print(f"Initializing attack method {args.attack_type} (strength: {args.attack_strength})...")
+        print(f"Initializing attack method {args.attack_type}")
         if args.attack_type == "rotation":
             attack_method = RotationAttack(device=device)
         elif args.attack_type == "resizedcrop":

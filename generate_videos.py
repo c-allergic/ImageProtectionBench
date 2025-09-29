@@ -7,7 +7,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 import argparse
 import datetime
@@ -23,7 +23,7 @@ from data import transform, pt_to_pil
 
 
 def load_image_pairs(input_dir):
-    """从输入目录加载图片对和对应的prompt"""
+    """从输入目录加载图片对和对应的prompt，包括攻击图片（如果存在）"""
     input_path = Path(input_dir)
     images_dir = input_path / "images"
     
@@ -38,6 +38,8 @@ def load_image_pairs(input_dir):
     
     # 匹配图片对
     image_pairs = []
+    attacked_count = 0
+    
     for orig_file in original_files:
         # 提取编号
         orig_num = orig_file.stem.split('_')[1]
@@ -47,16 +49,29 @@ def load_image_pairs(input_dir):
             # 获取对应的prompt
             prompt = prompts.get(int(orig_num), "") if prompts else ""
             
-            image_pairs.append({
+            pair_data = {
                 'original': str(orig_file),
                 'protected': str(prot_file),
                 'index': orig_num,
                 'prompt': prompt
-            })
+            }
+            
+            # 检查是否存在攻击后的图片
+            attack_file = images_dir / f"attacked_{orig_num}.png"
+            if attack_file.exists():
+                pair_data['attacked'] = str(attack_file)
+                attacked_count += 1
+            
+            image_pairs.append(pair_data)
         else:
             print(f"Warning: Protected image not found for {orig_file}")
     
     print(f"Found {len(image_pairs)} image pairs")
+    if attacked_count > 0:
+        print(f"Found {attacked_count} attacked images")
+    else:
+        print("No attacked images found")
+    
     return image_pairs
 
 
@@ -108,12 +123,13 @@ def load_prompts(input_path):
 
 
 def generate_videos_batch(image_pairs, i2v_model, videos_dir):
-    """批量生成视频"""
+    """批量生成视频，包括攻击图片的视频（如果存在）"""
     total_pairs = len(image_pairs)
     print(f"开始为 {total_pairs} 对图片生成视频")
     
     total_time = 0.0
     successful_videos = 0
+    successful_attacked_videos = 0
     
     for i, pair in enumerate(image_pairs):
         print(f"\n=== 处理图片对 {i+1}/{total_pairs} (index: {pair['index']}) ===")
@@ -173,7 +189,37 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir):
             print(f"保护后视频生成失败: {e}")
             prot_time = 0
         
-        total_time += orig_time + prot_time
+        # 生成攻击后图片视频（如果存在攻击图片）
+        attack_time = 0
+        if 'attacked' in pair:
+            attack_video_path = videos_dir / f"attacked_{pair['index']}.mp4"
+            start_time = time.time()
+            try:
+                # 加载并转换攻击后的图片
+                attack_img = Image.open(pair['attacked']).convert('RGB')
+                attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                
+                # 获取对应的prompt（与原图使用相同的prompt）
+                prompt = pair.get('prompt', '')
+                
+                # 生成视频
+                print(f"  攻击后图片使用prompt: {prompt}")
+                video_tensor = i2v_model.generate_video(attack_tensor, prompt=prompt)
+                video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                
+                # 保存视频
+                export_to_video(video_frames, str(attack_video_path))
+                print(f"Attacked video saved: {attack_video_path}")
+                
+                attack_time = time.time() - start_time
+                print(f"攻击后视频生成完成: {len(video_frames)} 帧, 耗时 {attack_time:.2f}秒")
+                successful_videos += 1
+                successful_attacked_videos += 1
+            except Exception as e:
+                print(f"攻击后视频生成失败: {e}")
+                attack_time = 0
+        
+        total_time += orig_time + prot_time + attack_time
         
         # 清理显存
         if torch.cuda.is_available():
@@ -182,6 +228,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir):
     return {
         'total_pairs': total_pairs,
         'successful_videos': successful_videos,
+        'successful_attacked_videos': successful_attacked_videos,
         'total_time': total_time,
         'avg_time_per_video': total_time / successful_videos if successful_videos > 0 else 0
     }
@@ -270,6 +317,8 @@ def main():
     print("视频生成完成!")
     print(f"处理图片对: {result['total_pairs']}")
     print(f"成功生成视频: {result['successful_videos']}")
+    if result['successful_attacked_videos'] > 0:
+        print(f"成功生成攻击视频: {result['successful_attacked_videos']}")
     print(f"总耗时: {result['total_time']:.2f}秒")
     print(f"平均每视频耗时: {result['avg_time_per_video']:.2f}秒")
     print(f"视频保存目录: {videos_dir}")

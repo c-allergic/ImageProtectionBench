@@ -1,0 +1,8 @@
+{
+    "method": "VGMShield",
+    "dataset": "Flickr30k",
+    "num_samples": 150,
+    "batch_size": 10,
+    "device": "cuda",
+    "timestamp": "2025-09-17T18:08:37.833282"
+}

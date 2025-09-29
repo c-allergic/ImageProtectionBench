@@ -1,0 +1,16 @@
+{
+    "method": "EditShield",
+    "aggregated": {
+        "protected_psnr": 36.39901022787374,
+        "protected_ssim": 0.934504908323288,
+        "protected_lpips": 0.12288420271128417,
+        "protected_clip_score": 0.9908549479166666,
+        "clip_upper_bound": 1.000193359375,
+        "clip_lower_bound": 0.83656640625
+    },
+    "time": {
+        "total_protection_time": 437.3843595981598,
+        "total_images_processed": 150,
+        "time_per_image": 2.9158957306543987
+    }
+}

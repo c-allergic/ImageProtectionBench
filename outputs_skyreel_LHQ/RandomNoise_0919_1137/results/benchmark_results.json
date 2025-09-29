@@ -1,0 +1,28 @@
+{
+    "method": "RandomNoise",
+    "aggregated": {
+        "protected_psnr": 40.92867684860588,
+        "protected_ssim": 0.9594422578811644,
+        "protected_lpips": 0.03274057337548583,
+        "protected_clip_score": 0.9233173177083334,
+        "clip_upper_bound": 1.0002910156249998,
+        "clip_lower_bound": 0.699650390625,
+        "original_subject_consistency": 0.8199958533478071,
+        "original_motion_smoothness": 0.9677373381921305,
+        "original_aesthetic_quality": 0.5107822195688884,
+        "original_imaging_quality": 0.6678421185862223,
+        "protected_subject_consistency": 0.8229297325910172,
+        "protected_motion_smoothness": 0.9688710560889262,
+        "protected_aesthetic_quality": 0.5070427209138869,
+        "protected_imaging_quality": 0.6493039784545899,
+        "diff_subject_consistency": -0.0029338792432099573,
+        "diff_motion_smoothness": -0.0011337178967958312,
+        "diff_aesthetic_quality": 0.003739498655001323,
+        "diff_imaging_quality": 0.018538140131632495
+    },
+    "time": {
+        "total_protection_time": 0.05339384078979492,
+        "total_images_processed": 150,
+        "time_per_image": 0.0003559589385986328
+    }
+}

@@ -103,7 +103,7 @@ def _generate_or_load_descriptions(images: List[Image.Image], dataset_name: str,
     
     # 构建描述文件路径
     descriptions_dir = os.path.join(path, "descriptions")
-    json_path = os.path.join(descriptions_dir, f"{dataset_name.lower()}_descriptions.json")
+    json_path = os.path.join(descriptions_dir, f"{dataset_name.lower()}_descriptions_exp.json")
     
     # 检查是否已存在足够的描述
     if check_descriptions_exist(json_path, len(images)):

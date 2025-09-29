@@ -11,7 +11,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 import json
 import argparse
 import glob
@@ -389,7 +389,7 @@ def main():
                        help="保护方法名称 (默认: Unknown)")
     parser.add_argument("--device", type=str, default="cuda",
                        help="计算设备 (默认: cuda)")
-    parser.add_argument("--output_filename", type=str, default="benchmark_results_clip.json",
+    parser.add_argument("--output_filename", type=str, default="benchmark_results.json",
                        help="输出文件名 (默认: benchmark_results.json)")
     parser.add_argument("--batch_size", type=int, default=10,
                        help="批次大小，每批处理的视频数量 (默认: 10)")
@@ -461,10 +461,6 @@ def main():
     if video_pairs:
         print("步骤4: 评估视频质量...")
         try:
-            #VBench评估
-            vbench_results = evaluate_videos_batch(video_pairs, metrics['vbench'], args.batch_size)
-            all_results.update(vbench_results)
-            
             # CLIP评估 - 从视频文件加载为张量
             print("加载视频张量进行CLIP评估...")
             original_videos, protected_videos, attacked_videos = load_videos_as_tensors(video_pairs, args.device)
@@ -477,6 +473,10 @@ def main():
                 print("视频CLIP评估完成")
             else:
                 print("跳过CLIP评估：无法加载视频张量")
+                
+            #VBench评估
+            vbench_results = evaluate_videos_batch(video_pairs, metrics['vbench'], args.batch_size)
+            all_results.update(vbench_results)
             
             print("视频质量评估完成")
         except Exception as e:

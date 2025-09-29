@@ -1,0 +1,28 @@
+{
+    "method": "VGMShield",
+    "aggregated": {
+        "protected_psnr": 43.51823414037589,
+        "protected_ssim": 0.9872360511620839,
+        "protected_lpips": 0.018957515081080296,
+        "protected_clip_score": 0.9389623697916666,
+        "clip_upper_bound": 1.0002304687499999,
+        "clip_lower_bound": 0.563357421875,
+        "original_subject_consistency": 0.9113419323699135,
+        "original_motion_smoothness": 0.9752853559558765,
+        "original_aesthetic_quality": 0.49895621657371525,
+        "original_imaging_quality": 0.623417662806193,
+        "protected_subject_consistency": 0.9077884453191009,
+        "protected_motion_smoothness": 0.9748256755198295,
+        "protected_aesthetic_quality": 0.49136651595433556,
+        "protected_imaging_quality": 0.6258313913879394,
+        "diff_subject_consistency": 0.0035534870508126923,
+        "diff_motion_smoothness": 0.00045968043604697784,
+        "diff_aesthetic_quality": 0.007589700619379679,
+        "diff_imaging_quality": -0.002413728581746424
+    },
+    "time":{
+        "total_protection_time": 23058.539252519608,
+        "total_images_processed": 150,
+        "time_per_image": 153.7235950167974
+    }
+}

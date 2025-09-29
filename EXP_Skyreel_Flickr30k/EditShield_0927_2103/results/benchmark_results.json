@@ -1,0 +1,40 @@
+{
+    "method": "EditShield",
+    "aggregated": {
+        "protected_psnr": 36.37519983246009,
+        "attacked_psnr": 34.26686404913743,
+        "protected_ssim": 0.9341593289375306,
+        "attacked_ssim": 0.9242435514926909,
+        "protected_lpips": 0.1237648672113816,
+        "attacked_lpips": 0.11532317983607453,
+        "protected_clip_score": 0.9165397135416667,
+        "clip_upper_bound": 1.000267578125,
+        "clip_lower_bound": 0.7758749999999999,
+        "attacked_clip_score": 0.9225902343749998,
+        "original_subject_consistency": 0.7250282221473754,
+        "original_motion_smoothness": 0.967317414862584,
+        "original_aesthetic_quality": 0.5341228671868642,
+        "original_imaging_quality": 0.6206413807322184,
+        "protected_subject_consistency": 0.7137365363569309,
+        "protected_motion_smoothness": 0.9685391823026245,
+        "protected_aesthetic_quality": 0.5233609698216121,
+        "protected_imaging_quality": 0.5978408535461425,
+        "diff_subject_consistency": 0.011291685790444409,
+        "diff_motion_smoothness": -0.0012217674400404235,
+        "diff_aesthetic_quality": 0.010761897365252175,
+        "diff_imaging_quality": 0.02280052718607585,
+        "attacked_subject_consistency": 0.7165584754659277,
+        "attacked_motion_smoothness": 0.9680352186175056,
+        "attacked_aesthetic_quality": 0.522320941289266,
+        "attacked_imaging_quality": 0.5904538096669516,
+        "attacked_diff_subject_consistency": 0.00846974668144766,
+        "attacked_diff_motion_smoothness": -0.0007178037549215466,
+        "attacked_diff_aesthetic_quality": 0.011801925897598268,
+        "attacked_diff_imaging_quality": 0.03018757106526692
+    },
+    "time": {
+        "total_protection_time": 475.84552788734436,
+        "total_images_processed": 150,
+        "time_per_image": 3.1723035192489624
+    }
+}
