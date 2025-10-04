@@ -1,8 +1,0 @@
-{
-    "method": "EditShield",
-    "dataset": "AFHQ-V2",
-    "num_samples": 150,
-    "batch_size": 10,
-    "device": "cuda",
-    "timestamp": "2025-09-18T02:42:44.673379"
-}

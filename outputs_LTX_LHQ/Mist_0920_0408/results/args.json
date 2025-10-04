@@ -1,9 +1,0 @@
-{
-    "dataset": "LHQ",
-    "num_samples": 150,
-    "data_path": "./data",
-    "protection_method": "Mist",
-    "batch_size": 10,
-    "device": "cuda",
-    "output_dir": "outputs_LTX_LHQ"
-}

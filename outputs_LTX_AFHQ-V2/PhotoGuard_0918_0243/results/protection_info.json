@@ -1,8 +1,0 @@
-{
-    "method": "PhotoGuard",
-    "dataset": "AFHQ-V2",
-    "num_samples": 150,
-    "batch_size": 10,
-    "device": "cuda",
-    "timestamp": "2025-09-18T04:45:32.615684"
-}

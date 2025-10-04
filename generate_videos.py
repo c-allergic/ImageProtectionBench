@@ -7,7 +7,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
 import datetime
@@ -76,8 +76,8 @@ def load_image_pairs(input_dir):
 
 
 def load_prompts(input_path):
-    """从data/descriptions目录加载prompt信息，参照experiment.py的方式"""
-    prompts = {}
+    """从data/descriptions目录加载prompt信息，同时加载恶意和正常prompt"""
+    prompts = {'malicious': {}, 'normal': {}}
     
     # 从args.json获取数据集信息
     args_file = input_path / "results" / "args.json"
@@ -93,37 +93,49 @@ def load_prompts(input_path):
         data_path = args_data.get('data_path', './data')
         num_samples = args_data.get('num_samples', 150)
         
-        # 构建prompt文件路径
-        prompt_file = Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions.json"
+        # 直接尝试所有可能的描述文件名
+        possible_files = [
+            Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions_exp.json",
+            Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions.json"
+        ]
         
-        if prompt_file.exists():
+        prompt_file = None
+        for file_path in possible_files:
+            if file_path.exists():
+                prompt_file = file_path
+                break
+        
+        if prompt_file:
             with open(prompt_file, 'r') as f:
                 prompts_data = json.load(f)
             
-            # 参照experiment.py的方式提取prompt
+            # 提取恶意和正常prompt
             if prompts_data and "data" in prompts_data:
                 # 提取描述列表，限制到num_samples
                 for i, item in enumerate(prompts_data["data"][:num_samples]):
-                    if isinstance(item, dict) and "malicious_prompt" in item:
-                        prompts[i] = item["malicious_prompt"]
+                    if isinstance(item, dict):
+                        if "malicious_prompt" in item:
+                            prompts['malicious'][i] = item["malicious_prompt"]
+                        if "normal_prompt" in item:
+                            prompts['normal'][i] = item["normal_prompt"]
                 
-                print(f"Loaded {len(prompts)} prompts from {prompt_file}")
+                print(f"加载了 {len(prompts['malicious'])} 个恶意prompt和 {len(prompts['normal'])} 个正常prompt")
             else:
-                print("No valid prompt data found in the file")
+                print("文件中没有找到有效的prompt数据")
         else:
-            print(f"Prompt file not found: {prompt_file}")
+            print(f"未找到任何描述文件")
             
     except Exception as e:
-        print(f"Failed to load prompts: {e}")
+        print(f"加载prompt失败: {e}")
     
-    if not prompts:
-        print("No prompts found, will use empty prompts for video generation")
+    if not prompts['malicious'] and not prompts['normal']:
+        print("未找到任何prompt，将使用空prompt进行视频生成")
     
     return prompts
 
 
-def generate_videos_batch(image_pairs, i2v_model, videos_dir):
-    """批量生成视频，包括攻击图片的视频（如果存在）"""
+def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
+    """批量生成视频，使用恶意和正常prompt分别生成视频"""
     total_pairs = len(image_pairs)
     print(f"开始为 {total_pairs} 对图片生成视频")
     
@@ -131,95 +143,179 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir):
     successful_videos = 0
     successful_attacked_videos = 0
     
+    # 如果没有提供prompts，使用空字典
+    if prompts is None:
+        prompts = {'malicious': {}, 'normal': {}}
+    
     for i, pair in enumerate(image_pairs):
-        print(f"\n=== 处理图片对 {i+1}/{total_pairs} (index: {pair['index']}) ===")
+        idx = int(pair['index'])
+        print(f"\n=== 处理图片对 {i+1}/{total_pairs} (index: {idx}) ===")
         
-        # 生成原图视频
-        orig_video_path = videos_dir / f"original_{pair['index']}.mp4"
-        start_time = time.time()
-        try:
-            # 加载并转换图片
-            orig_img = Image.open(pair['original']).convert('RGB')
-            orig_tensor = transform(orig_img).unsqueeze(0).to(i2v_model.device)
-            
-            # 获取对应的prompt
-            prompt = pair.get('prompt', '')
-            if prompt:
-                print(f"  使用prompt: {prompt}")
-            
-            # 生成视频
-            video_tensor = i2v_model.generate_video(orig_tensor, prompt=prompt)
-            video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
-            
-            # 保存视频
-            export_to_video(video_frames, str(orig_video_path))
-            print(f"Video saved: {orig_video_path}")
-            
-            orig_time = time.time() - start_time
-            print(f"原图视频生成完成: {len(video_frames)} 帧, 耗时 {orig_time:.2f}秒")
-            successful_videos += 1
-        except Exception as e:
-            print(f"原图视频生成失败: {e}")
-            orig_time = 0
+        # 获取恶意和正常prompt
+        malicious_prompt = prompts['malicious'].get(idx, '')
+        normal_prompt = prompts['normal'].get(idx, '')
         
-        # 生成保护后图片视频
-        prot_video_path = videos_dir / f"protected_{pair['index']}.mp4"
-        start_time = time.time()
-        try:
-            # 加载并转换图片
-            prot_img = Image.open(pair['protected']).convert('RGB')
-            prot_tensor = transform(prot_img).unsqueeze(0).to(i2v_model.device)
-            
-            # 获取对应的prompt（与原图使用相同的prompt）
-            prompt = pair.get('prompt', '')
-            
-            # 生成视频
-            print(f"  使用prompt: {prompt}")
-            video_tensor = i2v_model.generate_video(prot_tensor, prompt=prompt)
-            video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
-            
-            # 保存视频
-            export_to_video(video_frames, str(prot_video_path))
-            print(f"Video saved: {prot_video_path}")
-            
-            prot_time = time.time() - start_time
-            print(f"保护后视频生成完成: {len(video_frames)} 帧, 耗时 {prot_time:.2f}秒")
-            successful_videos += 1
-        except Exception as e:
-            print(f"保护后视频生成失败: {e}")
-            prot_time = 0
+        # 记录生成的视频时间
+        image_total_time = 0.0
         
-        # 生成攻击后图片视频（如果存在攻击图片）
-        attack_time = 0
-        if 'attacked' in pair:
-            attack_video_path = videos_dir / f"attacked_{pair['index']}.mp4"
+        # 为原始图片生成视频（使用恶意prompt）
+        if malicious_prompt:
+            orig_mal_video_path = videos_dir / f"original_{idx}_malicious.mp4"
             start_time = time.time()
             try:
-                # 加载并转换攻击后的图片
-                attack_img = Image.open(pair['attacked']).convert('RGB')
-                attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                # 加载并转换图片
+                orig_img = Image.open(pair['original']).convert('RGB')
+                orig_tensor = transform(orig_img).unsqueeze(0).to(i2v_model.device)
                 
-                # 获取对应的prompt（与原图使用相同的prompt）
-                prompt = pair.get('prompt', '')
-                
+                print(f"  使用恶意prompt: {malicious_prompt}")
                 # 生成视频
-                print(f"  攻击后图片使用prompt: {prompt}")
-                video_tensor = i2v_model.generate_video(attack_tensor, prompt=prompt)
+                video_tensor = i2v_model.generate_video(orig_tensor, prompt=malicious_prompt)
                 video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
                 
                 # 保存视频
-                export_to_video(video_frames, str(attack_video_path))
-                print(f"Attacked video saved: {attack_video_path}")
+                export_to_video(video_frames, str(orig_mal_video_path))
+                print(f"原图恶意视频已保存: {orig_mal_video_path}")
                 
-                attack_time = time.time() - start_time
-                print(f"攻击后视频生成完成: {len(video_frames)} 帧, 耗时 {attack_time:.2f}秒")
+                mal_time = time.time() - start_time
+                print(f"原图恶意视频生成完成: {len(video_frames)} 帧, 耗时 {mal_time:.2f}秒")
                 successful_videos += 1
-                successful_attacked_videos += 1
+                image_total_time += mal_time
             except Exception as e:
-                print(f"攻击后视频生成失败: {e}")
-                attack_time = 0
+                print(f"原图恶意视频生成失败: {e}")
         
-        total_time += orig_time + prot_time + attack_time
+        # 为原始图片生成视频（使用正常prompt）
+        if normal_prompt:
+            orig_norm_video_path = videos_dir / f"original_{idx}_normal.mp4"
+            start_time = time.time()
+            try:
+                # 加载并转换图片（如果之前已经加载过，可以重用）
+                if 'orig_tensor' not in locals():
+                    orig_img = Image.open(pair['original']).convert('RGB')
+                    orig_tensor = transform(orig_img).unsqueeze(0).to(i2v_model.device)
+                
+                print(f"  使用正常prompt: {normal_prompt}")
+                # 生成视频
+                video_tensor = i2v_model.generate_video(orig_tensor, prompt=normal_prompt)
+                video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                
+                # 保存视频
+                export_to_video(video_frames, str(orig_norm_video_path))
+                print(f"原图正常视频已保存: {orig_norm_video_path}")
+                
+                norm_time = time.time() - start_time
+                print(f"原图正常视频生成完成: {len(video_frames)} 帧, 耗时 {norm_time:.2f}秒")
+                successful_videos += 1
+                image_total_time += norm_time
+            except Exception as e:
+                print(f"原图正常视频生成失败: {e}")
+        
+        # 为保护后图片生成视频（使用恶意prompt）
+        if malicious_prompt:
+            prot_mal_video_path = videos_dir / f"protected_{idx}_malicious.mp4"
+            start_time = time.time()
+            try:
+                # 加载并转换图片
+                prot_img = Image.open(pair['protected']).convert('RGB')
+                prot_tensor = transform(prot_img).unsqueeze(0).to(i2v_model.device)
+                
+                print(f"  使用恶意prompt: {malicious_prompt}")
+                # 生成视频
+                video_tensor = i2v_model.generate_video(prot_tensor, prompt=malicious_prompt)
+                video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                
+                # 保存视频
+                export_to_video(video_frames, str(prot_mal_video_path))
+                print(f"保护图恶意视频已保存: {prot_mal_video_path}")
+                
+                mal_time = time.time() - start_time
+                print(f"保护图恶意视频生成完成: {len(video_frames)} 帧, 耗时 {mal_time:.2f}秒")
+                successful_videos += 1
+                image_total_time += mal_time
+            except Exception as e:
+                print(f"保护图恶意视频生成失败: {e}")
+        
+        # 为保护后图片生成视频（使用正常prompt）
+        if normal_prompt:
+            prot_norm_video_path = videos_dir / f"protected_{idx}_normal.mp4"
+            start_time = time.time()
+            try:
+                # 加载并转换图片（如果之前已经加载过，可以重用）
+                if 'prot_tensor' not in locals():
+                    prot_img = Image.open(pair['protected']).convert('RGB')
+                    prot_tensor = transform(prot_img).unsqueeze(0).to(i2v_model.device)
+                
+                print(f"  使用正常prompt: {normal_prompt}")
+                # 生成视频
+                video_tensor = i2v_model.generate_video(prot_tensor, prompt=normal_prompt)
+                video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                
+                # 保存视频
+                export_to_video(video_frames, str(prot_norm_video_path))
+                print(f"保护图正常视频已保存: {prot_norm_video_path}")
+                
+                norm_time = time.time() - start_time
+                print(f"保护图正常视频生成完成: {len(video_frames)} 帧, 耗时 {norm_time:.2f}秒")
+                successful_videos += 1
+                image_total_time += norm_time
+            except Exception as e:
+                print(f"保护图正常视频生成失败: {e}")
+        
+        # 生成攻击后图片视频（如果存在攻击图片）
+        if 'attacked' in pair:
+            # 为攻击后图片生成视频（使用恶意prompt）
+            if malicious_prompt:
+                attack_mal_video_path = videos_dir / f"attacked_{idx}_malicious.mp4"
+                start_time = time.time()
+                try:
+                    # 加载并转换攻击后的图片
+                    attack_img = Image.open(pair['attacked']).convert('RGB')
+                    attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                    
+                    print(f"  攻击后图片使用恶意prompt: {malicious_prompt}")
+                    # 生成视频
+                    video_tensor = i2v_model.generate_video(attack_tensor, prompt=malicious_prompt)
+                    video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                    
+                    # 保存视频
+                    export_to_video(video_frames, str(attack_mal_video_path))
+                    print(f"攻击图恶意视频已保存: {attack_mal_video_path}")
+                    
+                    mal_time = time.time() - start_time
+                    print(f"攻击图恶意视频生成完成: {len(video_frames)} 帧, 耗时 {mal_time:.2f}秒")
+                    successful_videos += 1
+                    successful_attacked_videos += 1
+                    image_total_time += mal_time
+                except Exception as e:
+                    print(f"攻击图恶意视频生成失败: {e}")
+            
+            # 为攻击后图片生成视频（使用正常prompt）
+            if normal_prompt:
+                attack_norm_video_path = videos_dir / f"attacked_{idx}_normal.mp4"
+                start_time = time.time()
+                try:
+                    # 加载并转换攻击后的图片（如果之前已经加载过，可以重用）
+                    if 'attack_tensor' not in locals():
+                        attack_img = Image.open(pair['attacked']).convert('RGB')
+                        attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                    
+                    print(f"  攻击后图片使用正常prompt: {normal_prompt}")
+                    # 生成视频
+                    video_tensor = i2v_model.generate_video(attack_tensor, prompt=normal_prompt)
+                    video_frames = [pt_to_pil(frame) for frame in video_tensor[0]]
+                    
+                    # 保存视频
+                    export_to_video(video_frames, str(attack_norm_video_path))
+                    print(f"攻击图正常视频已保存: {attack_norm_video_path}")
+                    
+                    norm_time = time.time() - start_time
+                    print(f"攻击图正常视频生成完成: {len(video_frames)} 帧, 耗时 {norm_time:.2f}秒")
+                    successful_videos += 1
+                    successful_attacked_videos += 1
+                    image_total_time += norm_time
+                except Exception as e:
+                    print(f"攻击图正常视频生成失败: {e}")
+        
+        total_time += image_total_time
         
         # 清理显存
         if torch.cuda.is_available():
@@ -245,7 +341,7 @@ def main():
                        help="输出目录，默认为input_dir")
     
     # I2V模型参数 - 参照benchmark.py
-    parser.add_argument('--i2v_model', type=str, default="LTX", 
+    parser.add_argument('--i2v_model', type=str, default="Skyreel", 
                        choices=["LTX", "WAN", "Skyreel"],
                        help="I2V模型类型")
     
@@ -291,6 +387,10 @@ def main():
         print("未找到图片对，退出")
         return
     
+    # 加载prompts
+    print("加载prompts...")
+    prompts = load_prompts(Path(args.input_dir))
+    
     # 初始化I2V模型 - 参照benchmark.py
     print(f"初始化I2V模型 {args.i2v_model}...")
     if args.i2v_model == "LTX":
@@ -304,7 +404,7 @@ def main():
     
     # 生成视频
     print("\n开始生成视频...")
-    result = generate_videos_batch(image_pairs, i2v_model, videos_dir)
+    result = generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts)
     
     # 保存结果统计
     result['timestamp'] = datetime.datetime.now().isoformat()
