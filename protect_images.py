@@ -6,8 +6,9 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+# 5 -> VGM SR LHQ
+# 1 -> VGM LTX LHQ
 import argparse
 import datetime
 import json
@@ -187,7 +188,7 @@ def main():
     parser.add_argument('--data_path', type=str, default="./data")
     
     # 保护方法参数
-    parser.add_argument('--protection_method', type=str, default="Mist", 
+    parser.add_argument('--protection_method', type=str, default="VGMShield", 
                        choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
     
     # 攻击参数

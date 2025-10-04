@@ -1,7 +1,0 @@
-{
-    "input_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_AFHQ-V2/VGMShield_0918_0257",
-    "output_dir": "/data_sde/lxf/ImageProtectionBench/outputs_LTX_AFHQ-V2/VGMShield_0918_0257",
-    "i2v_model": "LTX",
-    "device": "cuda",
-    "timestamp": "2025-09-18T09:38:45.911721"
-}
