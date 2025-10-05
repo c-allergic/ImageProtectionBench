@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-综合评估脚本
+Comprehensive Evaluation Script
 
-从指定文件夹的videos和images子文件夹读取数据，评估VBench分数、图像质量和攻击有效性，
-并将结果保存到results子文件夹的benchmark_results.json中。
+Reads data from videos and images subfolders in the specified folder, evaluates VBench scores,
+image quality and attack effectiveness, and saves results to benchmark_results.json in the results subfolder.
 
-使用方法:
+Usage:
     python evaluation.py --input_dir /path/to/experiment/folder
     python evaluation.py --input_dir /path/to/experiment/folder --method_name "EditShield"
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import json
 import argparse
 import glob
@@ -22,27 +22,27 @@ import torch
 import numpy as np
 from PIL import Image
 
-# 导入必要的模块
+# Import necessary modules
 from metrics.video_quality import VBenchMetric
-from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, LPIPSMetric
+from metrics import PSNRMetric, SSIMMetric, CLIPVideoScoreMetric, LPIPSMetric, CLIPVideoTextScoreMetric
 from data import transform, pt_to_pil
 from vbench.utils import load_video
 
 
 def find_video_pairs(videos_dir: str) -> List[Dict[str, str]]:
-    """从videos目录中找到视频对"""
+    """Find video pairs from videos directory"""
     if not os.path.exists(videos_dir):
-        print(f"错误: videos目录不存在: {videos_dir}")
+        print(f"Error: videos directory does not exist: {videos_dir}")
         return []
     
     video_pairs = []
     
-    # 查找所有原始视频文件
+    # Find all original video files
     original_pattern = os.path.join(videos_dir, "original_*.mp4")
     original_files = glob.glob(original_pattern)
     original_files.sort()
     
-    print(f"找到 {len(original_files)} 个原始视频文件")
+    print(f"Found {len(original_files)} original video files")
     
     for orig_path in original_files:
         filename = os.path.basename(orig_path)
@@ -56,41 +56,73 @@ def find_video_pairs(videos_dir: str) -> List[Dict[str, str]]:
                 'protected_path': prot_path,
                 'video_id': video_id
             })
-            print(f"  视频对 {video_id}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}")
         else:
-            print(f"  警告: 未找到对应的保护视频: {prot_path}")
+            print(f"  Warning: Protected video not found: {prot_path}")
     
-    # 检查是否有攻击视频
+    # Check for attacked videos
     attacked_pattern = os.path.join(videos_dir, "attacked_*.mp4")
     attacked_files = glob.glob(attacked_pattern)
     
     if attacked_files:
-        print(f"找到 {len(attacked_files)} 个攻击视频文件")
+        print(f"Found {len(attacked_files)} attacked video files")
         for pair in video_pairs:
             video_id = pair['video_id']
             attacked_path = os.path.join(videos_dir, f"attacked_{video_id}.mp4")
             if os.path.exists(attacked_path):
                 pair['attacked_path'] = attacked_path
-                print(f"  攻击视频 {video_id}: {os.path.basename(attacked_path)}")
     
-    print(f"总共找到 {len(video_pairs)} 个有效视频对")
+    print(f"Total found {len(video_pairs)} valid video pairs")
     return video_pairs
 
 
+def load_prompts_from_description(dataset_name: str, data_path: str) -> Dict:
+    """Load prompts from description file"""
+    print(f"Loading description file for dataset {dataset_name}...")
+    
+    file_path = os.path.join(data_path, "descriptions", f"{dataset_name.lower()}_descriptions_exp.json")
+
+    if not os.path.exists(file_path):
+        print(f"Warning: Description file not found for dataset {dataset_name}")
+        print(f"Tried path: {file_path}")
+        return {}
+    
+    print(f"Found description file: {file_path}")
+    
+    with open(file_path, 'r', encoding='utf-8') as f:
+        prompts_data = json.load(f)
+    
+    prompts = {'malicious': {}, 'normal': {}}
+    
+    if "data" in prompts_data:
+        for item in prompts_data["data"]:
+            if isinstance(item, dict) and "image_id" in item:
+                idx = item["image_id"]
+                if "malicious_prompt" in item:
+                    prompts['malicious'][idx] = item["malicious_prompt"]
+                if "normal_prompt" in item:
+                    prompts['normal'][idx] = item["normal_prompt"]
+        
+        print(f"Successfully loaded {len(prompts['malicious'])} malicious prompts and {len(prompts['normal'])} normal prompts")
+    else:
+        print("Warning: Description file format is incorrect")
+    
+    return prompts
+
+
 def find_image_pairs(images_dir: str) -> List[Dict[str, str]]:
-    """从images目录中找到图片对"""
+    """Find image pairs from images directory"""
     if not os.path.exists(images_dir):
-        print(f"错误: images目录不存在: {images_dir}")
+        print(f"Error: images directory does not exist: {images_dir}")
         return []
     
     image_pairs = []
     
-    # 查找所有原始图片文件
+    # Find all original image files
     original_pattern = os.path.join(images_dir, "original_*.png")
     original_files = glob.glob(original_pattern)
     original_files.sort()
     
-    print(f"找到 {len(original_files)} 个原始图片文件")
+    print(f"Found {len(original_files)} original image files")
     
     for orig_path in original_files:
         filename = os.path.basename(orig_path)
@@ -104,45 +136,43 @@ def find_image_pairs(images_dir: str) -> List[Dict[str, str]]:
                 'protected_path': prot_path,
                 'image_id': image_id
             })
-            print(f"  图片对 {image_id}: {os.path.basename(orig_path)} & {os.path.basename(prot_path)}")
         else:
-            print(f"  警告: 未找到对应的保护图片: {prot_path}")
+            print(f"  Warning: Protected image not found: {prot_path}")
     
-    # 检查是否有攻击图片
+    # Check for attacked images
     attacked_pattern = os.path.join(images_dir, "attacked_*.png")
     attacked_files = glob.glob(attacked_pattern)
     
     if attacked_files:
-        print(f"找到 {len(attacked_files)} 个攻击图片文件")
+        print(f"Found {len(attacked_files)} attacked image files")
         for pair in image_pairs:
             image_id = pair['image_id']
             attacked_path = os.path.join(images_dir, f"attacked_{image_id}.png")
             if os.path.exists(attacked_path):
                 pair['attacked_path'] = attacked_path
-                print(f"  攻击图片 {image_id}: {os.path.basename(attacked_path)}")
     
-    print(f"总共找到 {len(image_pairs)} 个有效图片对")
+    print(f"Total found {len(image_pairs)} valid image pairs")
     return image_pairs
 
 
 def load_images_as_tensors(image_pairs: List[Dict[str, str]], device: str) -> tuple:
-    """加载图片对为张量"""
+    """Load image pairs as tensors"""
     original_tensors = []
     protected_tensors = []
     attacked_tensors = []
     
     for pair in image_pairs:
-        # 加载原始图片
+        # Load original image
         orig_img = Image.open(pair['original_path']).convert('RGB')
         orig_tensor = transform(orig_img).to(device)
         original_tensors.append(orig_tensor)
         
-        # 加载保护后图片
+        # Load protected image
         prot_img = Image.open(pair['protected_path']).convert('RGB')
         prot_tensor = transform(prot_img).to(device)
         protected_tensors.append(prot_tensor)
         
-        # 加载攻击后图片（如果存在）
+        # Load attacked image (if exists)
         if 'attacked_path' in pair:
             attack_img = Image.open(pair['attacked_path']).convert('RGB')
             attack_tensor = transform(attack_img).to(device)
@@ -156,71 +186,65 @@ def load_images_as_tensors(image_pairs: List[Dict[str, str]], device: str) -> tu
 
 
 def load_videos_as_tensors(video_pairs: List[Dict[str, str]], device: str) -> tuple:
-    """从视频文件加载为张量，参照experiment.py的处理方式"""
+    """Load videos from files as tensors, following experiment.py approach"""
     original_videos = []
     protected_videos = []
     attacked_videos = []
     
-    print("从视频文件加载张量...")
+    print("Loading tensors from video files...")
     
     for i, pair in enumerate(video_pairs):
-        print(f"  加载视频 {i+1}/{len(video_pairs)}: {pair['video_id']}")
         
-        try:
-            # 加载原始视频
-            orig_video_tensor = load_video(pair['original_path'], return_tensor=True)
-            # 转换为float类型并归一化到[0,1]，与I2V模型输出格式一致
-            orig_video_tensor = orig_video_tensor.float() / 255.0
-            original_videos.append(orig_video_tensor)
-            
-            # 加载保护后视频
-            prot_video_tensor = load_video(pair['protected_path'], return_tensor=True)
-            # 转换为float类型并归一化到[0,1]，与I2V模型输出格式一致
-            prot_video_tensor = prot_video_tensor.float() / 255.0
-            protected_videos.append(prot_video_tensor)
-            
-            # 加载攻击后视频（如果存在）
-            if 'attacked_path' in pair:
-                attack_video_tensor = load_video(pair['attacked_path'], return_tensor=True)
-                # 转换为float类型并归一化到[0,1]，与I2V模型输出格式一致
-                attack_video_tensor = attack_video_tensor.float() / 255.0
-                attacked_videos.append(attack_video_tensor)
-                
-        except Exception as e:
-            print(f"    警告: 视频 {pair['video_id']} 加载失败: {e}")
-            continue
+        # Load original video
+        orig_video_tensor = load_video(pair['original_path'], return_tensor=True)
+        # Normalization to [0,1]
+        orig_video_tensor = orig_video_tensor.float() / 255.0
+        original_videos.append(orig_video_tensor)
+        
+        # Load protected video
+        prot_video_tensor = load_video(pair['protected_path'], return_tensor=True)
+        # Normalization to [0,1]
+        prot_video_tensor = prot_video_tensor.float() / 255.0
+        protected_videos.append(prot_video_tensor)
+        
+        # Load attacked video (if exists)
+        if 'attacked_path' in pair:
+            attack_video_tensor = load_video(pair['attacked_path'], return_tensor=True)
+            # Normalization to [0,1]
+            attack_video_tensor = attack_video_tensor.float() / 255.0
+            attacked_videos.append(attack_video_tensor)
     
     if not original_videos:
-        print("错误: 没有成功加载任何视频")
+        print("Error: No videos successfully loaded")
         return None, None, None
     
-    # 堆叠为批次张量
+    # Stack as batch tensors
     original_videos = torch.stack(original_videos).to(device)
     protected_videos = torch.stack(protected_videos).to(device)
     attacked_videos = torch.stack(attacked_videos).to(device) if attacked_videos else None
     
-    print(f"成功加载 {len(original_videos)} 个视频对")
-    print(f"原始视频张量形状: {original_videos.shape}")
-    print(f"保护后视频张量形状: {protected_videos.shape}")
+    print(f"Successfully loaded {len(original_videos)} video pairs")
+    print(f"Original videos tensor shape: {original_videos.shape}")
+    print(f"Protected videos tensor shape: {protected_videos.shape}")
     if attacked_videos is not None:
-        print(f"攻击后视频张量形状: {attacked_videos.shape}")
+        print(f"Attacked videos tensor shape: {attacked_videos.shape}")
     
     return original_videos, protected_videos, attacked_videos
 
 
 def evaluate_images(original_tensors, protected_tensors, metrics, attacked_tensors=None):
-    """评估图像质量，参照experiment.py"""
+    """Evaluate image quality, following experiment.py"""
     results = {}    
     
     for metric_name, metric in metrics.items():
         if metric_name in ['psnr', 'ssim', 'lpips']:
-            # 原图 vs 保护后图片的指标
+            # Original vs protected image metrics
             metric_result = metric.compute_multiple(original_tensors, protected_tensors)
             if metric_result:
                 for key, value in metric_result.items():
                     results[f'protected_{key}'] = value
             
-            # 如果有攻击后图片，计算原图 vs 攻击后图片的指标
+            # If attacked images exist, compute original vs attacked image metrics
             if attacked_tensors is not None:
                 attack_metric_result = metric.compute_multiple(original_tensors, attacked_tensors)
                 if attack_metric_result:
@@ -230,79 +254,144 @@ def evaluate_images(original_tensors, protected_tensors, metrics, attacked_tenso
     return results
 
 
-def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None, compute_clip_bounds=True):
-    """评估视频质量和攻击有效性，参照experiment.py"""
+def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None, compute_clip_bounds=True, prompts_dict=None):
+    """Evaluate video quality and attack effectiveness, following experiment.py"""
     results = {}
-    print(f"开始视频评估，video_paths数量: {len(video_paths) if video_paths else 0}")
+    print(f"Starting video evaluation, number of video_paths: {len(video_paths) if video_paths else 0}")
     
     for metric_name, metric in metrics.items():
-        print(f"处理metric: {metric_name}")
+        print(f"Processing metric: {metric_name}")
         
         if metric_name == 'clip' and original_videos is not None and protected_videos is not None:
             print("Running CLIP evaluation on video tensors...")
-            try:
-                # 原图 vs 保护后视频的CLIP评估
-                clip_result = metric.compute_multiple(original_videos, protected_videos)
-                if clip_result:
-                    for key, value in clip_result.items():
-                        results[f'protected_{key}'] = value
-                    print(f"保护后视频CLIP评估完成，获得 {len(clip_result)} 个结果")
+            # Original vs protected video CLIP evaluation
+            clip_result = metric.compute_multiple(original_videos, protected_videos)
+            if clip_result:
+                for key, value in clip_result.items():
+                    results[f'protected_{key}'] = value
+                print(f"Protected video CLIP evaluation completed, obtained {len(clip_result)} results")
+            
+            # Only compute CLIP theoretical upper and lower bounds in the first batch
+            if compute_clip_bounds:
+                print("Computing CLIP upper bound...")
+                print(f"  Using video tensor shape: {original_videos.shape}")
+                upper_bound = metric.compute_upper_bound(original_videos, sample_size=10)
+                results['clip_upper_bound'] = upper_bound
+                print(f"CLIP upper bound: {upper_bound:.4f}")
                 
-                # 只在第一个批次计算CLIP理论上限和下限
-                if compute_clip_bounds:
-                    print("计算CLIP理论上限...")
-                    print(f"  使用视频张量形状: {original_videos.shape}")
-                    upper_bound = metric.compute_upper_bound(original_videos, sample_size=10)
-                    results['clip_upper_bound'] = upper_bound
-                    print(f"CLIP理论上限: {upper_bound:.4f}")
-                    
-                    print("计算CLIP理论下限...")
-                    print(f"  使用视频张量形状: {original_videos.shape}")
-                    lower_bound = metric.compute_lower_bound(original_videos, sample_size=10)
-                    results['clip_lower_bound'] = lower_bound
-                    print(f"CLIP理论下限: {lower_bound:.4f}")
-                    
+                print("Computing CLIP lower bound...")
+                print(f"  Using video tensor shape: {original_videos.shape}")
+                lower_bound = metric.compute_lower_bound(original_videos, sample_size=10)
+                results['clip_lower_bound'] = lower_bound
+                print(f"CLIP lower bound: {lower_bound:.4f}")
                 
-                # 如果有攻击后视频，计算原图 vs 攻击后视频的CLIP评估  
-                if attacked_videos is not None:
-                    attack_clip_result = metric.compute_multiple(original_videos, attacked_videos)
-                    if attack_clip_result:
-                        for key, value in attack_clip_result.items():
-                            results[f'attacked_{key}'] = value
-                        print(f"攻击后视频CLIP评估完成，获得 {len(attack_clip_result)} 个结果")
-                        
-            except Exception as e:
-                print(f"CLIP评估出错: {e}")
-                
-        elif metric_name == 'vbench':
-            if video_paths is not None:
-                print("Running VBench evaluation using saved video files...")
-                try:
-                    metric_result = metric.compute_multiple(video_paths)
-                    if metric_result:
-                        for key, value in metric_result.items():
-                            results[f'{key}'] = value
-                        print(f"VBench评估完成，获得 {len(metric_result)} 个结果")
-                except Exception as e:
-                    print(f"VBench评估出错: {e}")
-            else:
-                print("VBench metric requires video file paths, skipping...")
-        else:
-            print(f"跳过metric: {metric_name} (不支持的metric类型)")
+            
+            # If attacked videos exist, compute original vs attacked video CLIP evaluation  
+            if attacked_videos is not None:
+                attack_clip_result = metric.compute_multiple(original_videos, attacked_videos)
+                if attack_clip_result:
+                    for key, value in attack_clip_result.items():
+                        results[f'attacked_{key}'] = value
+                    print(f"Attacked video CLIP evaluation completed, obtained {len(attack_clip_result)} results")
 
-    print(f"视频评估完成，总共获得 {len(results)} 个结果")
+        
+        elif metric_name == 'clip_text' and prompts_dict is not None and original_videos is not None and protected_videos is not None:
+            print("Running CLIP Video-Text evaluation...")
+            
+            # Check if prompts_dict is empty
+            if not prompts_dict:
+                print("  Warning: prompts_dict is empty, skipping CLIP Video-Text evaluation")
+                continue
+            
+            # Extract corresponding prompt for each video
+            prompts_list = []
+            for video_pair in video_paths:
+                video_id_str = video_pair['video_id']
+                
+                # Parse video_id to extract image_id and prompt type
+                # Format: "000_malicious" or "000_normal"
+                if '_' in video_id_str:
+                    parts = video_id_str.rsplit('_', 1)
+                    image_id_str = parts[0]
+                    prompt_type = parts[1]  # "malicious" or "normal"
+                    
+                    # Convert to integer (remove leading zeros)
+                    image_id = int(image_id_str)
+                    
+                    # Get prompt from prompts_dict
+                    if prompt_type in prompts_dict and image_id in prompts_dict[prompt_type]:
+                        prompt = prompts_dict[prompt_type][image_id]
+                    else:
+                        print(f"  Warning: Prompt not found for video_id {video_id_str} (image_id={image_id}, type={prompt_type}), using empty string")
+                        prompt = ""
+                else:
+                    print(f"  Warning: video_id format incorrect: {video_id_str}, using empty string")
+                    prompt = ""
+                
+                prompts_list.append(prompt)
+            
+            # Original videos
+            print("  Evaluating similarity between original videos and prompts...")
+            orig_result = metric.compute_multiple(original_videos, prompts_list)
+            if orig_result:
+                for key, value in orig_result.items():
+                    results[f'original_{key}'] = value
+                print(f"  Original video evaluation completed: {orig_result['clip_video_text_score']:.4f}")
+            
+            # Protected videos
+            print("  Evaluating similarity between protected videos and prompts...")
+            prot_result = metric.compute_multiple(protected_videos, prompts_list)
+            if prot_result:
+                for key, value in prot_result.items():
+                    results[f'protected_{key}'] = value
+                print(f"  Protected video evaluation completed: {prot_result['clip_video_text_score']:.4f}")
+            
+            # Attacked videos
+            if attacked_videos is not None:
+                print("  Evaluating similarity between attacked videos and prompts...")
+                attack_result = metric.compute_multiple(attacked_videos, prompts_list)
+                if attack_result:
+                    for key, value in attack_result.items():
+                        results[f'attacked_{key}'] = value
+                    print(f"  Attacked video evaluation completed: {attack_result['clip_video_text_score']:.4f}")
+            
+            # Compute upper and lower bounds only in the first batch
+            if compute_clip_bounds:
+                print("  Computing CLIP Video-Text upper bound...")
+                text_upper_bound = metric.compute_upper_bound(original_videos, prompts_list, sample_size=10)
+                results['clip_video_text_upper_bound'] = text_upper_bound
+                print(f"  CLIP Video-Text upper bound: {text_upper_bound:.4f}")
+                
+                print("  Computing CLIP Video-Text lower bound...")
+                text_lower_bound = metric.compute_lower_bound(original_videos, prompts_list, sample_size=10)
+                results['clip_video_text_lower_bound'] = text_lower_bound
+                print(f"  CLIP Video-Text lower bound: {text_lower_bound:.4f}")
+            
+            print(f"CLIP Video-Text evaluation completed")
+                
+                
+        elif metric_name == 'vbench' and video_paths is not None:
+            print("Running VBench evaluation using saved video files...")
+            metric_result = metric.compute_multiple(video_paths)
+            if metric_result:
+                for key, value in metric_result.items():
+                    results[f'{key}'] = value
+                print(f"VBench evaluation completed, obtained {len(metric_result)} results")
+    
+    print(f"Video evaluation completed, total obtained {len(results)} results")
     return results
 
 
 def setup_metrics(device: str = "cuda") -> Dict:
-    """设置所有评估指标"""
-    print("初始化评估指标...")
+    """Setup all evaluation metrics"""
+    print("Initializing evaluation metrics...")
     
     metrics = {
         'psnr': PSNRMetric(device=device),
         'ssim': SSIMMetric(device=device),
         'lpips': LPIPSMetric(device=device),
-        'clip': CLIPScoreMetric(device=device),
+        'clip': CLIPVideoScoreMetric(device=device),
+        'clip_text': CLIPVideoTextScoreMetric(device=device),
         'vbench': VBenchMetric(
             device=device,
             vbench_info_path="./metrics/vbench/VBench_full_info.json",
@@ -316,57 +405,12 @@ def setup_metrics(device: str = "cuda") -> Dict:
         )
     }
     
-    print("评估指标初始化完成")
+    print("Evaluation metrics initialization completed")
     return metrics
 
 
-def evaluate_videos_batch(video_pairs: List[Dict[str, str]], vbench_metric: VBenchMetric, batch_size: int = 10) -> Dict:
-    """评估视频对并返回结果，参照experiment.py的批次处理逻辑"""
-    total_videos = len(video_pairs)
-    print(f"开始评估 {total_videos} 个视频对，使用批次处理模式，每批处理 {batch_size} 个视频")
-    
-    all_batch_results = []
-    
-    for i in range(0, total_videos, batch_size):
-        batch_end = min(i + batch_size, total_videos)
-        batch_video_pairs = video_pairs[i:batch_end]
-        batch_num = i // batch_size + 1
-        
-        print(f"\n=== 处理批次 {batch_num} ({i+1}-{batch_end}) ===")
-        
-        try:
-            batch_results = vbench_metric.compute_multiple(batch_video_pairs)
-            all_batch_results.append(batch_results)
-            print(f"批次 {batch_num} 评估完成")
-        except Exception as e:
-            print(f"批次 {batch_num} 评估失败: {e}")
-            all_batch_results.append({})
-    
-    # 聚合所有批次结果
-    print(f"\n聚合 {len(all_batch_results)} 个批次的结果...")
-    final_results = {}
-    
-    for batch_results in all_batch_results:
-        for key, value in batch_results.items():
-            if key not in final_results:
-                final_results[key] = []
-            final_results[key].append(value)
-    
-    # 计算平均值
-    aggregated = {}
-    for key, values in final_results.items():
-        if all(isinstance(v, (int, float)) for v in values):
-            aggregated[key] = sum(values) / len(values)
-            print(f"  {key}: 平均={aggregated[key]:.4f} (来自{len(values)}个批次)")
-        else:
-            aggregated[key] = values
-    
-    print(f"视频评估完成，总共处理了 {total_videos} 个视频对")
-    return aggregated
-
-
 def save_results(results: Dict, output_path: str, method_name: str = "Unknown"):
-    """保存评估结果到JSON文件，参照experiment.py的格式"""
+    """Save evaluation results to JSON file, following experiment.py format"""
     final_results = {
         "method": method_name,
         "aggregated": results
@@ -377,127 +421,205 @@ def save_results(results: Dict, output_path: str, method_name: str = "Unknown"):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(final_results, f, indent=4, ensure_ascii=False)
     
-    print(f"结果已保存到: {output_path}")
+    print(f"Results saved to: {output_path}")
 
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description="综合评估脚本")
+    """Main function"""
+    parser = argparse.ArgumentParser(description="Comprehensive Evaluation Script")
     parser.add_argument("--input_dir", type=str, required=True,
-                       help="实验文件夹路径，包含videos和images子文件夹")
+                       help="Experiment folder path, containing videos and images subfolders")
     parser.add_argument("--method_name", type=str, default="Unknown",
-                       help="保护方法名称 (默认: Unknown)")
+                       help="Protection method name (default: Unknown)")
     parser.add_argument("--device", type=str, default="cuda",
-                       help="计算设备 (默认: cuda)")
+                       help="Computing device (default: cuda)")
     parser.add_argument("--output_filename", type=str, default="benchmark_results.json",
-                       help="输出文件名 (默认: benchmark_results.json)")
+                       help="Output filename (default: benchmark_results.json)")
     parser.add_argument("--batch_size", type=int, default=10,
-                       help="批次大小，每批处理的视频数量 (默认: 10)")
+                       help="Batch size, number of videos per batch (default: 10)")
+    parser.add_argument("--dataset", type=str, default=None,
+                       help="Dataset name for loading description file (e.g., AFHQ-v2)")
+    parser.add_argument("--data_path", type=str, default="./data",
+                       help="Data path containing descriptions subfolder (default: ./data)")
     
     args = parser.parse_args()
     
     print("=" * 60)
-    print("综合评估脚本")
+    print("Comprehensive Evaluation Script")
     print("=" * 60)
-    print(f"输入目录: {args.input_dir}")
-    print(f"方法名称: {args.method_name}")
-    print(f"计算设备: {args.device}")
-    print(f"输出文件名: {args.output_filename}")
-    print(f"批次大小: {args.batch_size}")
+    print(f"Input directory: {args.input_dir}")
+    print(f"Method name: {args.method_name}")
+    print(f"Computing device: {args.device}")
+    print(f"Output filename: {args.output_filename}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Dataset: {args.dataset if args.dataset else 'Not specified'}")
+    print(f"Data path: {args.data_path}")
     print()
     
     if not os.path.exists(args.input_dir):
-        print(f"错误: 输入目录不存在: {args.input_dir}")
+        print(f"Error: Input directory does not exist: {args.input_dir}")
         return
     
-    # 构建路径
+    # Load prompts (if dataset is specified)
+    prompts_dict = {}
+    if args.dataset:
+        prompts_dict = load_prompts_from_description(args.dataset, args.data_path)
+    else:
+        print("Dataset not specified, will skip CLIP Video-Text evaluation")
+    
+    # Build paths
     videos_dir = os.path.join(args.input_dir, "videos")
     images_dir = os.path.join(args.input_dir, "images")
     results_dir = os.path.join(args.input_dir, "results")
     output_path = os.path.join(results_dir, args.output_filename)
     
-    print(f"Videos目录: {videos_dir}")
-    print(f"Images目录: {images_dir}")
-    print(f"Results目录: {results_dir}")
-    print(f"输出路径: {output_path}")
+    print(f"Videos directory: {videos_dir}")
+    print(f"Images directory: {images_dir}")
+    print(f"Results directory: {results_dir}")
+    print(f"Output path: {output_path}")
     print()
     
-    # 步骤1: 查找数据对
-    print("步骤1: 查找数据对...")
+    # Step 1: Find data pairs
+    print("Step 1: Finding data pairs...")
     video_pairs = find_video_pairs(videos_dir)
     image_pairs = find_image_pairs(images_dir)
     
     if not video_pairs and not image_pairs:
-        print("错误: 未找到任何有效的数据对")
+        print("Error: No valid data pairs found")
         return
     
     print()
     
-    # 步骤2: 设置评估指标
-    print("步骤2: 设置评估指标...")
-    try:
-        metrics = setup_metrics(args.device)
-    except Exception as e:
-        print(f"错误: 评估指标初始化失败: {e}")
-        return
-    
+    # Step 2: Setup evaluation metrics
+    print("Step 2: Setting up evaluation metrics...")
+    metrics = setup_metrics(args.device)
+
     print()
     
-    # 步骤3: 评估图像质量
+    # Step 3: Evaluate image quality
     all_results = {}
     if image_pairs:
-        print("步骤3: 评估图像质量...")
-        try:
-            original_tensors, protected_tensors, attacked_tensors = load_images_as_tensors(image_pairs, args.device)
-            image_metrics = {k: v for k, v in metrics.items() if k in ['psnr', 'ssim', 'lpips']}
-            image_results = evaluate_images(original_tensors, protected_tensors, image_metrics, attacked_tensors)
-            all_results.update(image_results)
-            print("图像质量评估完成")
-        except Exception as e:
-            print(f"错误: 图像质量评估失败: {e}")
+        print("Step 3: Evaluating image quality...")
+        original_tensors, protected_tensors, attacked_tensors = load_images_as_tensors(image_pairs, args.device)
+        image_metrics = {k: v for k, v in metrics.items() if k in ['psnr', 'ssim', 'lpips']}
+        image_results = evaluate_images(original_tensors, protected_tensors, image_metrics, attacked_tensors)
+        all_results.update(image_results)
+        print("Image quality evaluation completed")
+
     
     
-    # 步骤4: 评估视频质量
+    # Step 4: Evaluate video quality (batch processing to avoid GPU memory overflow)
     if video_pairs:
-        print("步骤4: 评估视频质量...")
-        try:
-            # CLIP评估 - 从视频文件加载为张量
-            print("加载视频张量进行CLIP评估...")
-            original_videos, protected_videos, attacked_videos = load_videos_as_tensors(video_pairs, args.device)
+        print("Step 4: Evaluating video quality...")
+        
+        # CLIP evaluation - batch processing
+        total_videos = len(video_pairs)
+        video_metrics = {k: v for k, v in metrics.items() if k in ['clip', 'clip_text']}
+        all_clip_batch_results = []
+        
+        for i in range(0, total_videos, args.batch_size):
+            batch_end = min(i + args.batch_size, total_videos)
+            batch_video_pairs = video_pairs[i:batch_end]
+            batch_num = i // args.batch_size + 1
             
-            if original_videos is not None and protected_videos is not None:
-                # 使用experiment.py的方式评估视频
-                video_metrics = {k: v for k, v in metrics.items() if k in ['clip']}
-                video_results = evaluate_videos(video_metrics, video_pairs, original_videos, protected_videos, attacked_videos, compute_clip_bounds=True)
-                all_results.update(video_results)
-                print("视频CLIP评估完成")
+            print(f"\n=== Processing CLIP batch {batch_num} ({i+1}-{batch_end}) ===")
+            
+            # Load current batch videos
+            print(f"  Loading batch video tensors...")
+            original_videos, protected_videos, attacked_videos = load_videos_as_tensors(batch_video_pairs, args.device)
+            
+            if original_videos is None or protected_videos is None:
+                print(f"  Batch {batch_num} video loading failed, skipping")
+                continue
+            
+            # Evaluate current batch
+            is_first_batch = (i == 0)
+            batch_results = evaluate_videos(video_metrics, batch_video_pairs, original_videos, protected_videos, attacked_videos, compute_clip_bounds=is_first_batch, prompts_dict=prompts_dict)
+            all_clip_batch_results.append(batch_results)
+            
+            # Clean up GPU memory
+            del original_videos, protected_videos
+            if attacked_videos is not None:
+                del attacked_videos
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            print(f"Batch {batch_num} evaluation completed")
+        
+        # Aggregate CLIP batch results
+        print(f"\nAggregating results from {len(all_clip_batch_results)} CLIP batches...")
+        clip_final_results = {}
+        for batch_results in all_clip_batch_results:
+            if batch_results is None:
+                print("Warning: Encountered None batch_results, skipping")
+                continue
+            for key, value in batch_results.items():
+                if key not in clip_final_results:
+                    clip_final_results[key] = []
+                clip_final_results[key].append(value)
+        
+        # Calculate average
+        for key, values in clip_final_results.items():
+            if all(isinstance(v, (int, float)) for v in values):
+                if key in ['clip_upper_bound', 'clip_lower_bound', 'clip_video_text_upper_bound', 'clip_video_text_lower_bound']:
+                    all_results[key] = values[0]
+                    print(f"  {key}: {all_results[key]:.4f}")
+                else:
+                    all_results[key] = sum(values) / len(values)
+                    print(f"  {key}: average={all_results[key]:.4f} (from {len(values)} batches)")
             else:
-                print("跳过CLIP评估：无法加载视频张量")
-                
-            #VBench评估
-            vbench_results = evaluate_videos_batch(video_pairs, metrics['vbench'], args.batch_size)
-            all_results.update(vbench_results)
+                all_results[key] = values
+        
+        print("Video CLIP evaluation completed")
+        
+        # VBench evaluation - batch processing
+        print("\nStarting VBench evaluation...")
+        vbench_metric = metrics['vbench']
+        all_vbench_batch_results = []
+        
+        for i in range(0, total_videos, args.batch_size):
+            batch_end = min(i + args.batch_size, total_videos)
+            batch_video_pairs = video_pairs[i:batch_end]
+            batch_num = i // args.batch_size + 1
             
-            print("视频质量评估完成")
-        except Exception as e:
-            print(f"错误: 视频质量评估失败: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"\n=== Processing VBench batch {batch_num} ({i+1}-{batch_end}) ===")
+            
+            batch_results = vbench_metric.compute_multiple(batch_video_pairs)
+            all_vbench_batch_results.append(batch_results)
+            print(f"Batch {batch_num} evaluation completed")
+        
+        # Aggregate VBench batch results
+        print(f"\nAggregating results from {len(all_vbench_batch_results)} VBench batches...")
+        vbench_final_results = {}
+        for batch_results in all_vbench_batch_results:
+            if batch_results is None:
+                print("Warning: Encountered None batch_results, skipping")
+                continue
+            for key, value in batch_results.items():
+                if key not in vbench_final_results:
+                    vbench_final_results[key] = []
+                vbench_final_results[key].append(value)
+        
+        # Calculate average
+        for key, values in vbench_final_results.items():
+            if all(isinstance(v, (int, float)) for v in values):
+                all_results[key] = sum(values) / len(values)
+                print(f"  {key}: average={all_results[key]:.4f} (from {len(values)} batches)")
+            else:
+                all_results[key] = values
+        
+        print("Video quality evaluation completed")
     
     print()
     
-    # 步骤5: 保存结果
-    print("步骤5: 保存评估结果...")
-    try:
-        save_results(all_results, output_path, args.method_name)
-    except Exception as e:
-        print(f"错误: 结果保存失败: {e}")
-        return
+    # Step 5: Save results
+    print("Step 5: Saving evaluation results...")
+    save_results(all_results, output_path, args.method_name)
     
     print()
     print("=" * 60)
-    print("评估完成!")
-    print(f"结果已保存到: {output_path}")
+    print("Evaluation completed!")
+    print(f"Results saved to: {output_path}")
     print("=" * 60)
 
 

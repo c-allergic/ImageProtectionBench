@@ -1,3 +1,3 @@
-from .base import I2VModelBase, WANModel, SkyreelModel, LTXModel
+from .base import I2VModelBase, SkyreelModel, LTXModel, WAN22Model
 
-__all__ = ['I2VModelBase', 'WANModel', 'SkyreelModel', 'LTXModel'] 
+__all__ = ['I2VModelBase', 'SkyreelModel', 'LTXModel', 'WAN22Model'] 

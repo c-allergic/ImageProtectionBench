@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional, List, Tuple, Union
 import numpy as np
 from PIL import Image
 import os
+import sys
 import time
 from contextlib import nullcontext
 from diffusers.utils import export_to_video
@@ -72,131 +73,6 @@ class I2VModelBase(ABC):
             生成的视频张量 [B, T, C, H, W]，范围[0,1]
         """
         pass
-
-class WANModel(I2VModelBase):
-    """WAN模型实现，基于videogen.py中的实现"""
-    
-    def __init__(self, **kwargs):
-        # WAN模型特定配置 - 按照videogen.py的方式处理model_path
-        model_path = kwargs.get('model_path')
-        if model_path is None or model_path == "":
-            # 如果model_path为None或空字符串，使用默认值
-            self.model_id = "Wan-AI/Wan2.1-I2V-14B-480P-Diffusers"
-        else:
-            self.model_id = model_path
-            
-        # 设置WAN模型默认参数
-        kwargs.setdefault('frame_rate', 12)
-        kwargs.setdefault('num_frames', 73)  # 6秒 * 12fps + 1
-        kwargs.setdefault('height', 480)
-        kwargs.setdefault('width', 832)
-        kwargs.setdefault('guidance_scale', 7)
-        kwargs.setdefault('num_inference_steps', 40)
-        kwargs.setdefault('prompt', '')
-        kwargs.setdefault('negative_prompt', '')
-        kwargs.setdefault('seed', 42)
-        
-        super().__init__(**kwargs)
-    
-    def _setup_model(self):
-        """加载WAN模型pipeline"""
-        from diffusers import WanImageToVideoPipeline, AutoencoderKLWan
-        from transformers import CLIPVisionModel
-        
-        print(f"加载WAN模型: {self.model_id}")
-        
-        # 加载图像编码器
-        image_encoder = CLIPVisionModel.from_pretrained(
-            self.model_id, 
-            subfolder="image_encoder", 
-            torch_dtype=torch.float32,
-            cache_dir="/data_sde/lxf/cache/huggingface"
-        )
-        image_encoder.to(self.device)
-        
-        # 加载VAE
-        vae = AutoencoderKLWan.from_pretrained(
-            self.model_id, 
-            subfolder="vae", 
-            torch_dtype=torch.float32,
-            cache_dir="/data_sde/lxf/cache/huggingface"
-        )
-        vae.to(self.device)
-        
-        # 加载管道
-        self.pipeline = WanImageToVideoPipeline.from_pretrained(
-            self.model_id, 
-            vae=vae, 
-            image_encoder=image_encoder, 
-            torch_dtype=torch.bfloat16,
-            cache_dir="/data_sde/lxf/cache/huggingface"
-        )
-        self.pipeline.to(self.device)
-        self.pipeline.enable_model_cpu_offload()
-        
-        self.is_loaded = True
-        print(f"✅ WAN模型加载成功")
-    
-    def generate_video(self, images: torch.Tensor, **kwargs ) -> torch.Tensor:
-        """使用WAN pipeline生成视频"""
-        if not self.is_loaded:
-            raise RuntimeError("模型未加载成功")
-        
-        prompt = kwargs.get('prompt', self.prompt)
-        negative_prompt = kwargs.get('negative_prompt', self.negative_prompt)
-        guidance_scale = kwargs.get('guidance_scale', self.guidance_scale)
-        num_inference_steps = kwargs.get('num_inference_steps', self.num_inference_steps)
-        num_frames = kwargs.get('num_frames', self.num_frames)
-        
-        batch_size = images.size(0)
-        all_videos = []
-        
-        for b in range(batch_size):
-            # 转换为PIL图像
-            pil_image = pt_to_pil(images[b])
-            
-            # 调整分辨率
-            mod_value = self.pipeline.vae_scale_factor_spatial * self.pipeline.transformer.config.patch_size[1]
-            width = (self.width // mod_value) * mod_value
-            height = (self.height // mod_value) * mod_value
-            
-            if width == 0:
-                width = mod_value
-            if height == 0:
-                height = mod_value
-            
-            # 生成视频
-            start_time = time.time()
-            video_frames = self.pipeline(
-                prompt=prompt,
-                negative_prompt=negative_prompt, 
-                image=pil_image,
-                num_frames=num_frames,
-                height=height,
-                width=width,
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_inference_steps,
-                generator=torch.Generator().manual_seed(42),
-            ).frames[0]
-            
-            # 转换回张量
-            frames_tensor = []
-            for frame in video_frames:
-                frame_array = np.array(frame)
-                frame_tensor = torch.from_numpy(frame_array).permute(2, 0, 1).float() / 255.0
-                frames_tensor.append(frame_tensor)
-            
-            video_tensor = torch.stack(frames_tensor)
-            all_videos.append(video_tensor)
-            
-            # Clear GPU cache after each video generation
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            print(f"✅ 视频生成完成，用时: {time.time() - start_time:.1f}秒")
-        
-        return torch.stack(all_videos).to(self.device)
-
 
 class SkyreelModel(I2VModelBase):
     """SkyReels模型实现，直接使用本地SkyReels-V2官方代码"""
@@ -565,5 +441,161 @@ class LTXModel(I2VModelBase):
         print(f"✅ LTX四步生成完成，用时: {total_time:.1f}秒，{len(video)}帧")
         
         return video
+
+
+class WAN22Model(I2VModelBase):
+    """Wan2.2 TI2V本地模型实现，使用本地Wan2.2代码"""
+    
+    def __init__(self, **kwargs):
+        # Wan2.2模型特定配置
+        model_path = kwargs.get('model_path')
+        if model_path is None or model_path == "":
+            self.checkpoint_dir = "/data_sde/lxf/Wan2.2/Wan2.2-TI2V-5B"
+        else:
+            self.checkpoint_dir = model_path
+            
+        # 设置Wan2.2模型默认参数
+        kwargs.setdefault('frame_rate', 12)
+        kwargs.setdefault('num_frames', 25)
+        kwargs.setdefault('height', 704)
+        kwargs.setdefault('width', 1280)
+        kwargs.setdefault('guidance_scale', 5.0)
+        kwargs.setdefault('num_inference_steps', 30)
+        kwargs.setdefault('sample_shift', 5.0)
+        kwargs.setdefault('prompt', '')
+        kwargs.setdefault('seed', 42)
+        
+        # 保存高级参数
+        self.sample_shift = kwargs.get('sample_shift', 5.0)
+        self.max_area = kwargs.get('max_area', 704 * 1280)
+        
+        # 设备配置
+        self.device_id = kwargs.get('device_id', 0)
+        
+        super().__init__(**kwargs)
+    
+    def _setup_model(self):
+        """设置Wan2.2 TI2V模型pipeline"""
+        # 添加Wan2.2路径到Python路径
+        wan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'Wan2.2')
+        absolute_wan_path = os.path.abspath(wan_path)
+        
+        if not os.path.exists(absolute_wan_path):
+            print(f"错误: Wan2.2路径不存在: {absolute_wan_path}")
+            self.is_loaded = False
+            return
+            
+        if absolute_wan_path not in sys.path:
+            sys.path.insert(0, absolute_wan_path)
+        print(f"Wan2.2路径: {absolute_wan_path}")
+        
+        # 检查checkpoint目录
+        if not os.path.exists(self.checkpoint_dir):
+            print(f"错误: 模型权重目录不存在: {self.checkpoint_dir}")
+            self.is_loaded = False
+            return
+        
+        print(f"正在加载Wan2.2 TI2V模型: {self.checkpoint_dir}")
+        
+        # 导入Wan2.2模块
+        import wan
+        from wan.configs import WAN_CONFIGS, SIZE_CONFIGS, MAX_AREA_CONFIGS
+        
+        # 获取配置
+        task = "ti2v-5B"
+        cfg = WAN_CONFIGS[task]
+        
+        # 创建WanTI2V pipeline
+        self.pipeline = wan.WanTI2V(
+            config=cfg,
+            checkpoint_dir=self.checkpoint_dir,
+            device_id=self.device_id,
+            rank=0,
+            t5_fsdp=False,
+            dit_fsdp=False,
+            use_sp=False,
+            t5_cpu=False,
+            convert_model_dtype=False,
+        )
+        
+        # 保存配置信息
+        self.SIZE_CONFIGS = SIZE_CONFIGS
+        self.MAX_AREA_CONFIGS = MAX_AREA_CONFIGS
+        
+        self.is_loaded = True
+        print(f"✅ Wan2.2 TI2V模型加载成功")
+    
+    def generate_video(
+        self,
+        images: torch.Tensor,
+        **kwargs
+    ) -> torch.Tensor:
+        """使用Wan2.2 TI2V生成视频
+        
+        Args:
+            images: 输入图像张量 [B, C, H, W]，范围[0,1]
+            **kwargs: 可选参数
+            
+        Returns:
+            生成的视频张量 [B, T, C, H, W]，范围[0,1]
+        """
+        
+        if not self.is_loaded or self.pipeline is None:
+            raise RuntimeError("Wan2.2模型未正确加载")
+        
+        prompt = kwargs.get('prompt', self.prompt)
+        guidance_scale = kwargs.get('guidance_scale', self.guidance_scale)
+        num_inference_steps = kwargs.get('num_inference_steps', self.num_inference_steps)
+        num_frames = kwargs.get('num_frames', self.num_frames)
+        sample_shift = kwargs.get('sample_shift', self.sample_shift)
+        seed = kwargs.get('seed', self.seed)
+        
+        batch_size = images.size(0)
+        all_videos = []
+        
+        for b in range(batch_size):
+            # 转换为PIL图像
+            pil_image = pt_to_pil(images[b])
+            
+            print(f"正在生成视频 {b+1}/{batch_size}...")
+            start_time = time.time()
+            
+            # 准备尺寸配置
+            size_key = f"{self.width}*{self.height}"
+            if size_key not in self.SIZE_CONFIGS:
+                size_key = "1280*704"
+                print(f"警告: 尺寸 {self.width}*{self.height} 不支持，使用默认 {size_key}")
+            
+            # 使用Wan2.2 pipeline生成视频
+            with torch.no_grad():
+                video_tensor = self.pipeline.generate(
+                    input_prompt=prompt,
+                    img=pil_image,
+                    size=self.SIZE_CONFIGS[size_key],
+                    max_area=self.max_area,
+                    frame_num=num_frames,
+                    shift=sample_shift,
+                    sample_solver='unipc',
+                    sampling_steps=num_inference_steps,
+                    guide_scale=guidance_scale,
+                    seed=seed + b,
+                    offload_model=True
+                )
+            
+            # video_tensor 的形状应该是 [T, C, H, W]，范围 [-1, 1]
+            # 需要转换到 [0, 1]
+            video_tensor = (video_tensor + 1.0) / 2.0
+            video_tensor = video_tensor.clamp(0, 1)
+            
+            all_videos.append(video_tensor)
+            
+            print(f"✅ 视频 {b+1} 生成完成，用时: {time.time() - start_time:.1f}秒，形状: {video_tensor.shape}")
+            
+            # Clear GPU cache after each video generation
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
+        # 返回 [B, T, C, H, W]
+        return torch.stack(all_videos).to(self.device)
     
  
