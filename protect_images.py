@@ -16,7 +16,7 @@ import torch
 import time
 
 from data import load_dataset, transform, pt_to_pil, DATASETS
-from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
+from protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
 from experiment_utils import setup_output_directories

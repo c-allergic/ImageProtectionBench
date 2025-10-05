@@ -160,11 +160,11 @@ class VGMShield(ProtectionBase):
         
         # 设置默认路径
         if model_config is None:
-            model_config = "models/protection/vgm_config.yaml"
+            model_config = "protection/vgm_config.yaml"
         self.model_config = model_config
         
         if target_image_path is None:
-            target_image_path = "MIST.png"  # 使用默认目标图像
+            target_image_path = "protection/MIST.png"  # 使用默认目标图像
         self.target_image_path = target_image_path
         
         super().__init__(**kwargs)

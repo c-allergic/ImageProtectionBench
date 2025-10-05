@@ -7,7 +7,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import argparse
 import datetime
@@ -18,7 +18,7 @@ from PIL import Image
 from pathlib import Path
 from diffusers.utils import export_to_video
 
-from models.i2v import WAN22Model, LTXModel, SkyreelModel
+from i2v import WAN22Model, LTXModel, SkyreelModel
 from data import transform, pt_to_pil
 
 
@@ -341,7 +341,7 @@ def main():
                        help="输出目录，默认为input_dir")
     
     # I2V模型参数 - 参照benchmark.py
-    parser.add_argument('--i2v_model', type=str, default="Skyreel", 
+    parser.add_argument('--i2v_model', type=str, default="WAN", 
                        choices=["LTX", "WAN", "Skyreel"],
                        help="I2V模型类型")
     

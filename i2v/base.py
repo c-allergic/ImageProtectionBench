@@ -119,7 +119,7 @@ class SkyreelModel(I2VModelBase):
         import os
         
         # 添加SkyReels-V2路径到Python路径
-        skyreels_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'SkyReels-V2')
+        skyreels_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'SkyReels-V2')
         absolute_skyreels_path = os.path.abspath(skyreels_path)
         if not os.path.exists(absolute_skyreels_path):
             print(f"❌ SkyReels-V2路径不存在: {absolute_skyreels_path}")
@@ -477,7 +477,7 @@ class WAN22Model(I2VModelBase):
     def _setup_model(self):
         """设置Wan2.2 TI2V模型pipeline"""
         # 添加Wan2.2路径到Python路径
-        wan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'Wan2.2')
+        wan_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'Wan2.2')
         absolute_wan_path = os.path.abspath(wan_path)
         
         if not os.path.exists(absolute_wan_path):
@@ -582,8 +582,9 @@ class WAN22Model(I2VModelBase):
                     offload_model=True
                 )
             
-            # video_tensor 的形状应该是 [T, C, H, W]，范围 [-1, 1]
-            # 需要转换到 [0, 1]
+            # video_tensor 的形状是 [C, T, H, W]，需要转换为 [T, C, H, W]
+            # 范围 [-1, 1]，需要转换到 [0, 1]
+            video_tensor = video_tensor.permute(1, 0, 2, 3)  # [C, T, H, W] -> [T, C, H, W]
             video_tensor = (video_tensor + 1.0) / 2.0
             video_tensor = video_tensor.clamp(0, 1)
             
