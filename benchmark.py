@@ -17,8 +17,8 @@ import torch
 
 from data import load_dataset, DATASETS
 from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise, ExpGuard
-from models.i2v import WANModel, LTXModel, SkyreelModel
-from metrics import PSNRMetric, SSIMMetric, CLIPScoreMetric, VBenchMetric, LPIPSMetric
+from models.i2v import WAN22Model, LTXModel, SkyreelModel
+from metrics import PSNRMetric, SSIMMetric, CLIPVideoScoreMetric, VBenchMetric, LPIPSMetric, CLIPVideoTextScoreMetric
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
 from experiment_utils import setup_output_directories, run_benchmark
@@ -39,8 +39,8 @@ if __name__ == '__main__':
                        choices=["LTX", "WAN", "Skyreel"])
     
     # Evaluation parameters
-    parser.add_argument('--metrics', nargs='+', default=["psnr", "ssim", "lpips", "clip","time","vbench"],
-                       choices=["psnr", "ssim", "lpips", "clip", "vbench", "time"])
+    parser.add_argument('--metrics', nargs='+', default=["psnr", "ssim", "lpips", "clip","time","vbench","clip_text"],
+                       choices=["psnr", "ssim", "lpips", "clip", "vbench", "time","clip_text"])
     
     # Attack parameters
     parser.add_argument('--enable_attack',default=True, action='store_true', 
@@ -103,7 +103,7 @@ if __name__ == '__main__':
     if args.i2v_model == "LTX":
         i2v_model = LTXModel(device=device)
     elif args.i2v_model == "WAN":
-        i2v_model = WANModel(device=device)
+        i2v_model = WAN22Model(device=device)
     elif args.i2v_model == "Skyreel":
         i2v_model = SkyreelModel(device=device)
     else:
@@ -145,7 +145,9 @@ if __name__ == '__main__':
         elif metric_name == "ssim":
             metrics[metric_name] = SSIMMetric(device=device)
         elif metric_name == "clip":
-            metrics[metric_name] = CLIPScoreMetric(device=device)
+            metrics[metric_name] = CLIPVideoScoreMetric(device=device)
+        elif metric_name == "clip_text":
+            metrics[metric_name] = CLIPVideoTextScoreMetric(device=device)
         elif metric_name == "vbench":
             metrics[metric_name] = VBenchMetric(device=device)
         elif metric_name == "time":

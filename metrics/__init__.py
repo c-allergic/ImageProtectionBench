@@ -11,7 +11,7 @@ This module provides various metrics for evaluating image protection methods:
 from .base import BaseMetric, ImageQualityMetric, VideoQualityMetric, EffectivenessMetric
 from .image_quality import PSNRMetric, SSIMMetric, LPIPSMetric
 from .video_quality import VBenchMetric # , FVDMetric, TemporalConsistencyMetric
-from .attack_effectiveness import CLIPScoreMetric # , AttackSuccessRateMetric, ProtectionRobustnessMetric
+from .effectiveness import CLIPVideoScoreMetric, CLIPVideoTextScoreMetric 
 
 
 __all__ = [
@@ -29,7 +29,6 @@ __all__ = [
     # 'FVDMetric',
     # 'TemporalConsistencyMetric',
     # Attack effectiveness metrics
-    'CLIPScoreMetric',
-    # 'AttackSuccessRateMetric',
-    # 'ProtectionRobustnessMetric',
+    'CLIPVideoScoreMetric',
+    'CLIPVideoTextScoreMetric',
 ] 

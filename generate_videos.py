@@ -18,7 +18,7 @@ from PIL import Image
 from pathlib import Path
 from diffusers.utils import export_to_video
 
-from models.i2v import WANModel, LTXModel, SkyreelModel
+from models.i2v import WAN22Model, LTXModel, SkyreelModel
 from data import transform, pt_to_pil
 
 
@@ -396,7 +396,7 @@ def main():
     if args.i2v_model == "LTX":
         i2v_model = LTXModel(device=device)
     elif args.i2v_model == "WAN":
-        i2v_model = WANModel(device=device)
+        i2v_model = WAN22Model(device=device)
     elif args.i2v_model == "Skyreel":
         i2v_model = SkyreelModel(device=device)
     else:

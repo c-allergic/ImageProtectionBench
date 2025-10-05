@@ -34,7 +34,7 @@ def evaluate_images(original_images, protected_images, metrics, attacked_images=
     
     return results
 
-def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None, compute_clip_bounds=True):
+def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_videos=None, attacked_videos=None, compute_clip_bounds=True, prompts=None):
     """Evaluate video quality and effectiveness"""
     results = {}
     print(f"开始视频评估，video_paths数量: {len(video_paths) if video_paths else 0}")
@@ -48,60 +48,90 @@ def evaluate_videos(metrics, video_paths=None, original_videos=None, protected_v
         
         if metric_name == 'clip' and original_videos is not None and protected_videos is not None:
             print("Running CLIP evaluation on video tensors...")
-            try:
-                # 原图 vs 保护后视频的CLIP评估
-                clip_result = metric.compute_multiple(original_videos, protected_videos)
-                if clip_result:
-                    for key, value in clip_result.items():
-                        results[f'protected_{key}'] = value
-                    print(f"保护后视频CLIP评估完成，获得 {len(clip_result)} 个结果")
+            # 原图 vs 保护后视频的CLIP评估
+            clip_result = metric.compute_multiple(original_videos, protected_videos)
+            if clip_result:
+                for key, value in clip_result.items():
+                    results[f'protected_{key}'] = value
+                print(f"保护后视频CLIP评估完成，获得 {len(clip_result)} 个结果")
+            
+            # 只在第一个批次计算CLIP理论上限和下限
+            if compute_clip_bounds:
+                print("计算CLIP理论上限...")
+                upper_bound = metric.compute_upper_bound(original_videos, sample_size=10)
+                results['clip_upper_bound'] = upper_bound
+                print(f"CLIP理论上限: {upper_bound:.4f}")
                 
-                # 只在第一个批次计算CLIP理论上限和下限
-                if compute_clip_bounds:
-                    print("计算CLIP理论上限...")
-                    upper_bound = metric.compute_upper_bound(original_videos, sample_size=10)
-                    results['clip_upper_bound'] = upper_bound
-                    print(f"CLIP理论上限: {upper_bound:.4f}")
-                    
-                    print("计算CLIP理论下限...")
-                    lower_bound = metric.compute_lower_bound(original_videos, sample_size=10)
-                    results['clip_lower_bound'] = lower_bound
-                    print(f"CLIP理论下限: {lower_bound:.4f}")
-                
-                # 如果有攻击后视频，计算原图 vs 攻击后视频的CLIP评估  
-                if attacked_videos is not None:
-                    attack_clip_result = metric.compute_multiple(original_videos, attacked_videos)
-                    if attack_clip_result:
-                        for key, value in attack_clip_result.items():
-                            results[f'attacked_{key}'] = value
-                        print(f"攻击后视频CLIP评估完成，获得 {len(attack_clip_result)} 个结果")
+                print("计算CLIP理论下限...")
+                lower_bound = metric.compute_lower_bound(original_videos, sample_size=10)
+                results['clip_lower_bound'] = lower_bound
+                print(f"CLIP理论下限: {lower_bound:.4f}")
+            
+            # 如果有攻击后视频，计算原图 vs 攻击后视频的CLIP评估  
+            if attacked_videos is not None:
+                attack_clip_result = metric.compute_multiple(original_videos, attacked_videos)
+                if attack_clip_result:
+                    for key, value in attack_clip_result.items():
+                        results[f'attacked_{key}'] = value
+                    print(f"攻击后视频CLIP评估完成，获得 {len(attack_clip_result)} 个结果")
                         
-            except Exception as e:
-                print(f"CLIP评估出错: {e}")
-                import traceback
-                traceback.print_exc()
+        elif metric_name == 'clip_text' and prompts and original_videos is not None and protected_videos is not None:
+            print("Running CLIP Video-Text evaluation...")
+             # 对original、protected和attacked视频分别计算与prompt的相似度
+                
+            # Original videos
+            print("  评估original视频与prompt的相似度...")
+            orig_result = metric.compute_multiple(original_videos, prompts)
+            if orig_result:
+                for key, value in orig_result.items():
+                    results[f'original_{key}'] = value
+                print(f"  Original视频评估完成: {orig_result['clip_video_text_score']:.4f}")
+            
+            # Protected videos
+            print("  评估protected视频与prompt的相似度...")
+            prot_result = metric.compute_multiple(protected_videos, prompts)
+            if prot_result:
+                for key, value in prot_result.items():
+                    results[f'protected_{key}'] = value
+                print(f"  Protected视频评估完成: {prot_result['clip_video_text_score']:.4f}")
+            
+            # Attacked videos
+            if attacked_videos is not None:
+                print("  评估attacked视频与prompt的相似度...")
+                attack_result = metric.compute_multiple(attacked_videos, prompts)
+                if attack_result:
+                    for key, value in attack_result.items():
+                        results[f'attacked_{key}'] = value
+                    print(f"  Attacked视频评估完成: {attack_result['clip_video_text_score']:.4f}")
+            
+            # 只在第一个批次计算CLIP Video-Text理论上限和下限
+            if compute_clip_bounds:
+                print("  计算CLIP Video-Text理论上限...")
+                text_upper_bound = metric.compute_upper_bound(original_videos, prompts, sample_size=10)
+                results['clip_video_text_upper_bound'] = text_upper_bound
+                print(f"  CLIP Video-Text理论上限: {text_upper_bound:.4f}")
+                
+                print("  计算CLIP Video-Text理论下限...")
+                text_lower_bound = metric.compute_lower_bound(original_videos, prompts, sample_size=10)
+                results['clip_video_text_lower_bound'] = text_lower_bound
+                print(f"  CLIP Video-Text理论下限: {text_lower_bound:.4f}")
+            
+            print(f"CLIP Video-Text评估完成")
                 
         elif metric_name == 'vbench':
             if video_paths is not None:
                 print("Running VBench evaluation using saved video files...")
-                print(f"视频路径列表: {video_paths}")
-                try:
-                    metric_result = metric.compute_multiple(video_paths)
-                    if metric_result:
-                        for key, value in metric_result.items():
-                            results[f'{key}'] = value
-                        print(f"VBench评估完成，获得 {len(metric_result)} 个结果")
-                    else:
-                        print("VBench评估返回空结果")
-                except Exception as e:
-                    print(f"VBench评估出错: {e}")
-                    import traceback
-                    traceback.print_exc()
+                print(f"视频路径列表: {video_paths}")       
+                metric_result = metric.compute_multiple(video_paths)
+                if metric_result:
+                    for key, value in metric_result.items():
+                        results[f'{key}'] = value
+                    print(f"VBench评估完成，获得 {len(metric_result)} 个结果")
+                else:
+                    print("VBench评估返回空结果")
             else:
                 print("VBench metric requires video file paths, skipping...")
-        else:
-            print(f"跳过metric: {metric_name} (不支持的metric类型)")
-
+                
     print(f"视频评估完成，总共获得 {len(results)} 个结果")
     return results
 
@@ -225,7 +255,7 @@ def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, sa
         image_results = evaluate_images(original_tensors, protected_tensors, image_metrics, attacked_tensors)
         # 只在第一个批次计算CLIP bounds
         is_first_batch = (i == 0)
-        video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos, attacked_videos, compute_clip_bounds=is_first_batch)
+        video_results = evaluate_videos(metrics, video_paths, original_videos, protected_videos, attacked_videos, compute_clip_bounds=is_first_batch, prompts=batch_prompts)
         
         # 保存批次结果
         all_image_results.append(image_results)
@@ -257,7 +287,7 @@ def run_benchmark(args, data, prompts, protection_method, i2v_model, metrics, sa
     for key, values in final_results.items():
         if all(isinstance(v, (int, float)) for v in values):
             # 对于理论上限和下限，使用第一个值（它们对所有批次都相同）
-            if key in ['clip_upper_bound', 'clip_lower_bound']:
+            if key in ['clip_upper_bound', 'clip_lower_bound', 'clip_video_text_upper_bound', 'clip_video_text_lower_bound']:
                 aggregated[key] = values[0]
             else:
                 # 其他数值取平均
