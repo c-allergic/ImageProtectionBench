@@ -17,21 +17,27 @@ class PhotoGuard(ProtectionBase):
     def __init__(
         self,
         model_name: str = "runwayml/stable-diffusion-v1-5",
-        epsilon: float = 0.06,
-        step_size: float = 0.02,
-        num_steps: int = 1000,
+        epsilon: float = 16/255,
+        step_size: float = 2/255,
+        num_steps: int = 200,
         clamp_min: float = -1,
         clamp_max: float = 1,
         **kwargs
     ):
         """
+        PhotoGuard 保护方法初始化
+        
         Args:
             model_name: Stable Diffusion模型名称或路径
-            epsilon: 扰动预算
-            step_size: 优化步长
-            num_steps: 优化步数
-            clamp_min: 像素值下限
-            clamp_max: 像素值上限
+            epsilon: L∞ 扰动预算，论文值 16/255 ≈ 0.0627
+            step_size: PGD 攻击步长，论文值 2/255 ≈ 0.0078
+            num_steps: 优化步数（默认 200）
+            clamp_min: 像素值下限（VAE 需要 -1）
+            clamp_max: 像素值上限（VAE 需要 1）
+        
+        Note:
+            - 所有内部操作在 [-1, 1] 范围内进行（VAE 要求）
+            - 接口输入输出为 [0, 1] 范围
         """
         self.model_name = model_name
         self.diffusion_model = None
@@ -61,14 +67,23 @@ class PhotoGuard(ProtectionBase):
         # 将图像移到正确的设备
         image = image.to(self.device)
         
-        # 添加批次维度
-        image_batch = image.unsqueeze(0)  # [1, C, H, W]
+        # 转换到 [-1, 1] 范围（Stable Diffusion VAE 要求）
+        image_normalized = image * 2.0 - 1.0  # [0,1] → [-1,1]
         
-        # 使用PGD攻击
+        # 添加批次维度
+        image_batch = image_normalized.unsqueeze(0)  # [1, C, H, W]
+        
+        # 使用PGD攻击（在 [-1,1] 范围内操作）
         protected_batch = self._pgd_attack(image_batch)
         
         # 移除批次维度
-        return protected_batch.squeeze(0)
+        protected = protected_batch.squeeze(0)
+        
+        # 转换回 [0, 1] 范围（接口要求）
+        protected = (protected + 1.0) / 2.0  # [-1,1] → [0,1]
+        protected = torch.clamp(protected, 0, 1)  # 确保在有效范围内
+        
+        return protected
     
     def _pgd_attack(
         self,
@@ -147,7 +162,6 @@ class PhotoGuard(ProtectionBase):
             if mask is not None:
                 X_adv.data *= mask
         
-        # 确保最终张量不需要梯度, otherwise video benchmark will fail
         X_adv.detach_()
         return X_adv
 

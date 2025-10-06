@@ -163,9 +163,9 @@ class LinfPGDAttack:
 
 class Mist(ProtectionBase):
     def __init__(self, 
-                 epsilon: int = 16,
+                 epsilon: int = 17,  
                  steps: int = 100, 
-                 alpha: int = 1,
+                 alpha: int = 1,  
                  input_size: int = 512,
                  object: bool = False,
                  seed: int = 23,
@@ -339,12 +339,14 @@ class Mist(ProtectionBase):
         label = torch.zeros_like(data_source)
         
         # Execute PGD attack
+        # Note: epsilon and alpha are in [0,1] range (e.g., 17/255, 1/255)
+        # We need to scale to [-1,1] range by multiplying by 2
         attack = LinfPGDAttack(
             predict=self.net,
             loss_fn=self.fn,
-            eps=self.epsilon/255.0 * (1-(-1)),
+            eps=self.epsilon/255.0 * 2.0,  # Scale from [0,1] to [-1,1] range
             nb_iter=self.steps,
-            eps_iter=self.alpha/255.0 * (1-(-1)),
+            eps_iter=self.alpha/255.0 * 2.0,  # Scale from [0,1] to [-1,1] range
             clip_min=-1.0,
             clip_max=1.0,
             targeted=True

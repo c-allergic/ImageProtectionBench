@@ -26,7 +26,8 @@ class EditShield(ProtectionBase):
         self,
         protection_strength: float = 0.05,
         max_steps: int = 30,
-        beta: float = 0.1,
+        beta: float = 0.2,
+        perturbation_budget: float = 4/255,  # 扰动预算，默认 4/255
         model_path: str = './protection/instruct-pix2pix-main/diffuser_cache',
         cop_path: str = './protection/instruct-pix2pix-main/cop_file',
         transform_type: str = "none",  # "none", "center", "gaussian", "rotation"
@@ -37,6 +38,7 @@ class EditShield(ProtectionBase):
             protection_strength: 保护强度
             max_steps: 优化步数
             beta: 感知一致性权重
+            perturbation_budget: 扰动预算（L∞范数），默认 4/255
             model_path: 模型缓存路径
             cop_path: 模型文件路径
             transform_type: 变换类型 ("none", "center", "gaussian", "rotation")
@@ -44,6 +46,7 @@ class EditShield(ProtectionBase):
         self.protection_strength = protection_strength
         self.max_steps = max_steps
         self.beta = beta
+        self.perturbation_budget = perturbation_budget
         self.model_path = model_path
         self.cop_path = cop_path
         self.transform_type = transform_type
@@ -85,8 +88,6 @@ class EditShield(ProtectionBase):
     
     def get_emb(self, img: torch.Tensor) -> torch.Tensor:
         """
-        获取图像嵌入 - 从第一个EditShield复制
-        
         Args:
             img: 输入图像张量
             
@@ -246,8 +247,10 @@ class EditShield(ProtectionBase):
             # 保存原始数据
             original_data = perturbed_data.clone()
             
-            # 初始化对抗样本
+            # 初始化对抗样本，添加小的高斯噪声
             perturbed_images_single = perturbed_data.detach().clone()
+            perturbed_images_single = perturbed_images_single + torch.randn_like(perturbed_images_single) * 0.01  # 添加标准差为0.01的高斯噪声
+            perturbed_images_single = torch.clamp(perturbed_images_single, -1, 1)  # 保持在合理范围内
             
             # 获取目标嵌入（未变换的原始图像）
             tgt_data = single_image.clone()
@@ -281,6 +284,13 @@ class EditShield(ProtectionBase):
                 
                 total_loss.backward()
                 optimizer.step()
+                
+                # 应用扰动预算限制（L∞范数）
+                with torch.no_grad():
+                    perturbation = perturbed_images_single - single_image
+                    perturbation = torch.clamp(perturbation, -self.perturbation_budget, self.perturbation_budget)
+                    perturbed_images_single.data = single_image + perturbation
+                    perturbed_images_single.data = torch.clamp(perturbed_images_single.data, 0, 1)
             
             # 获取最终的受保护图像
             protected_single = perturbed_images_single.detach()
