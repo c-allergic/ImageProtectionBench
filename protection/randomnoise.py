@@ -6,11 +6,7 @@ from typing import Union, List
 
 class RandomNoise(ProtectionBase):
     """
-    RandomNoise: I2VGuard论文中的随机噪声baseline方法
-    
-    参考论文: I2VGuard (CVPR 2025)
-    
-    实现细节:
+  实现细节:
     - 噪声类型: 均匀随机噪声 (Uniform Random Noise)
     - 扰动上限: L∞范数 ε = 4/255 (8-bit图像上±4灰度级)
     - 应用范围: 整张图像，无区域限制

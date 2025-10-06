@@ -6,9 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-# 5 -> VGM SR LHQ
-# 1 -> VGM LTX LHQ
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import argparse
 import datetime
 import json
