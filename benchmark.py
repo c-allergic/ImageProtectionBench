@@ -16,8 +16,8 @@ import json
 import torch
 
 from data import load_dataset, DATASETS
-from models.protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise, ExpGuard
-from models.i2v import WAN22Model, LTXModel, SkyreelModel
+from protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise, ExpGuard
+from i2v import WAN22Model, LTXModel, SkyreelModel
 from metrics import PSNRMetric, SSIMMetric, CLIPVideoScoreMetric, VBenchMetric, LPIPSMetric, CLIPVideoTextScoreMetric
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)

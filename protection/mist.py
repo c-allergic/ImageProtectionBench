@@ -182,9 +182,9 @@ class Mist(ProtectionBase):
         if config_path is None:
             config_path = 'configs/stable-diffusion/v1-inference-attack.yaml'
         if ckpt_path is None:
-            ckpt_path = 'models/ldm/stable-diffusion-v1/model.ckpt'
+            ckpt_path = 'protection/ldm/stable-diffusion-v1/model.ckpt'
         if target_image_path is None:
-            target_image_path = 'MIST.png'
+            target_image_path = 'protection/MIST.png'
             
         self.config_path = config_path
         self.ckpt_path = ckpt_path

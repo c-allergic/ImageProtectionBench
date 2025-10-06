@@ -27,8 +27,8 @@ class EditShield(ProtectionBase):
         protection_strength: float = 0.05,
         max_steps: int = 30,
         beta: float = 0.1,
-        model_path: str = './models/protection/instruct-pix2pix-main/diffuser_cache',
-        cop_path: str = './models/protection/instruct-pix2pix-main/cop_file',
+        model_path: str = './protection/instruct-pix2pix-main/diffuser_cache',
+        cop_path: str = './protection/instruct-pix2pix-main/cop_file',
         transform_type: str = "none",  # "none", "center", "gaussian", "rotation"
         **kwargs
     ):
@@ -75,7 +75,7 @@ class EditShield(ProtectionBase):
         
         # 加载CLIP模型用于特征提取
         self.clip_model, _ = clip.load(
-            "./models/protection/instruct-pix2pix-main/clip-vit-large-patch14/ViT-L-14.pt", 
+            "./protection/instruct-pix2pix-main/clip-vit-large-patch14/ViT-L-14.pt", 
             device="cpu", 
             download_root="./"
         )
