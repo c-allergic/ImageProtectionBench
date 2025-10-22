@@ -6,7 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 import argparse
 import datetime
 import json
@@ -14,7 +14,7 @@ import torch
 import time
 
 from data import load_dataset, transform, pt_to_pil, DATASETS
-from protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise
+from protection import PhotoGuard, EditShield, Mist, I2VGuard, VGMShield, RandomNoise, ExpGuard
 from attacks import (RotationAttack, ResizedCropAttack, ErasingAttack, BrightnessAttack, 
                      ContrastAttack, BlurringAttack, NoiseAttack, SaltPepperAttack, CompressionAttack)
 from experiment_utils import setup_output_directories
@@ -35,6 +35,8 @@ def initialize_protection_method(method_name: str, device: str):
         protection_method = VGMShield(device=device)
     elif method_name == "RandomNoise":
         protection_method = RandomNoise(device=device)
+    elif method_name == "ExpGuard":
+        protection_method = ExpGuard(device=device)
     else:
         raise ValueError(f"Unknown protection method: {method_name}")
     return protection_method
@@ -181,13 +183,13 @@ def main():
     parser = argparse.ArgumentParser(description="简洁的图片保护脚本")
     
     # 数据集参数
-    parser.add_argument('--dataset', type=str, default="LHQ", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=150) 
+    parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
+    parser.add_argument('--num_samples', type=int, default=10) 
     parser.add_argument('--data_path', type=str, default="./data")
     
     # 保护方法参数
-    parser.add_argument('--protection_method', type=str, default="VGMShield", 
-                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise"])
+    parser.add_argument('--protection_method', type=str, default="ExpGuard", 
+                       choices=["PhotoGuard", "EditShield", "Mist", "I2VGuard", "VGMShield", "RandomNoise", "ExpGuard"])
     
     # 攻击参数
     parser.add_argument('--enable_attack', default=True, action='store_true', 
@@ -202,7 +204,7 @@ def main():
     
     # 系统参数
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="EXP_LTX_LHQ")
+    parser.add_argument('--output_dir', type=str, default="EXP_Skyreel_Flickr30k")
     
     args = parser.parse_args()
     

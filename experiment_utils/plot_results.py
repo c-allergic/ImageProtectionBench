@@ -14,21 +14,52 @@ import numpy as np
 
 
 def _extract_base_args(args_path):
-    """提取基准参数"""
+    """提取基准参数，支持从分离的实验文件中读取"""
     with open(args_path, 'r') as f:
         args = json.load(f)
+    
+    # 尝试从video_generation_args.json读取i2v_model
+    exp_dir = os.path.dirname(os.path.dirname(args_path))
+    video_gen_args_path = os.path.join(exp_dir, "video_generation_args.json")
+    i2v_model = args.get('i2v_model', 'unknown')
+    
+    if i2v_model == 'unknown' and os.path.exists(video_gen_args_path):
+        with open(video_gen_args_path, 'r') as f:
+            video_args = json.load(f)
+        i2v_model = video_args.get('i2v_model', 'unknown')
+    
+    # 尝试从benchmark_results.json推断可用的metrics
+    benchmark_path = os.path.join(os.path.dirname(args_path), "benchmark_results.json")
+    metrics = set(args.get('metrics', []))
+    
+    if not metrics and os.path.exists(benchmark_path):
+        with open(benchmark_path, 'r') as f:
+            results = json.load(f)
+        # 从结果中推断metrics
+        if 'aggregated' in results:
+            agg = results['aggregated']
+            if any('psnr' in k for k in agg.keys()):
+                metrics.add('psnr')
+            if any('ssim' in k for k in agg.keys()):
+                metrics.add('ssim')
+            if any('lpips' in k for k in agg.keys()):
+                metrics.add('lpips')
+            if any('clip_score' in k for k in agg.keys()):
+                metrics.add('clip_score')
+            if any('subject_consistency' in k for k in agg.keys()):
+                metrics.add('vbench')
     
     return {
         'dataset': args.get('dataset', 'unknown'),
         'num_samples': args.get('num_samples', 'unknown'),
-        'i2v_model': args.get('i2v_model', 'unknown'),
+        'i2v_model': i2v_model,
         'enable_attack': args.get('enable_attack', False),
         'attack_type': args.get('attack_type', None) if args.get('enable_attack', False) else None,
-        'metrics': set(args.get('metrics', []))
+        'metrics': metrics
     }
 
 def _extract_experiment_info(experiment_dirs):
-    """从实验目录中提取数据集和模型信息"""
+    """从实验目录中提取数据集和模型信息，支持分离的实验格式"""
     if not experiment_dirs:
         return "unknown", "unknown"
     
@@ -40,8 +71,16 @@ def _extract_experiment_info(experiment_dirs):
     with open(first_args_path, 'r') as f:
         args = json.load(f)
     
-    dataset = args.get('dataset', 'unknown')
+    dataset = args.get('dataset', 'Flickr30K')
     i2v_model = args.get('i2v_model', 'unknown')
+    
+    # 如果args.json中没有i2v_model，尝试从video_generation_args.json读取
+    if i2v_model == 'unknown':
+        video_gen_args_path = os.path.join(experiment_dirs[0], "video_generation_args.json")
+        if os.path.exists(video_gen_args_path):
+            with open(video_gen_args_path, 'r') as f:
+                video_args = json.load(f)
+            i2v_model = video_args.get('i2v_model', 'Skyreel')
     
     return dataset, i2v_model
 
@@ -56,15 +95,16 @@ def _print_validation_baseline(base_args, context=""):
     print(f"- 评估指标: {', '.join(sorted(base_args['metrics']))}")
 
 def _check_experiment_consistency(exp_dir, base_args, check_dataset=True):
-    """检查单个实验的一致性"""
+    """检查单个实验的一致性，支持分离的实验格式"""
     args_path = os.path.join(exp_dir, "results", "args.json")
     results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
+    video_gen_args_path = os.path.join(exp_dir, "video_generation_args.json")
     
     if not os.path.exists(args_path):
-        return None, f"{os.path.basename(exp_dir)}: 缺少args.json文件"
+        return None, f"{os.path.basename(exp_dir)}: 缺少results/args.json文件"
         
     if not os.path.exists(results_path):
-        return None, f"{os.path.basename(exp_dir)}: 缺少benchmark_results.json文件"
+        return None, f"{os.path.basename(exp_dir)}: 缺少results/benchmark_results.json文件"
     
     # 读取实验配置和结果
     with open(args_path, 'r') as f:
@@ -72,7 +112,14 @@ def _check_experiment_consistency(exp_dir, base_args, check_dataset=True):
     with open(results_path, 'r') as f:
         current_results = json.load(f)
     
-    method_name = current_results.get('method', os.path.basename(exp_dir))
+    # 尝试读取i2v_model信息
+    current_i2v_model = current_args.get('i2v_model', 'unknown')
+    if current_i2v_model == 'unknown' and os.path.exists(video_gen_args_path):
+        with open(video_gen_args_path, 'r') as f:
+            video_args = json.load(f)
+        current_i2v_model = video_args.get('i2v_model', 'unknown')
+    
+    method_name = current_results.get('method', os.path.basename(exp_dir).split('_')[0])
     issues = []
     
     # 检查关键参数一致性
@@ -82,8 +129,8 @@ def _check_experiment_consistency(exp_dir, base_args, check_dataset=True):
     if current_args.get('num_samples', 'unknown') != base_args['num_samples']:
         issues.append(f"样本数量不一致 ({current_args.get('num_samples', 'unknown')} vs {base_args['num_samples']})")
     
-    if current_args.get('i2v_model', 'unknown') != base_args['i2v_model']:
-        issues.append(f"I2V模型不一致 ({current_args.get('i2v_model', 'unknown')} vs {base_args['i2v_model']})")
+    if current_i2v_model != base_args['i2v_model']:
+        issues.append(f"I2V模型不一致 ({current_i2v_model} vs {base_args['i2v_model']})")
     
     current_enable_attack = current_args.get('enable_attack', False)
     if current_enable_attack != base_args['enable_attack']:
@@ -96,10 +143,26 @@ def _check_experiment_consistency(exp_dir, base_args, check_dataset=True):
         if current_attack_type != base_args['attack_type']:
             issues.append(f"攻击类型不一致 ({current_attack_type} vs {base_args['attack_type']})")
     
+    # 从结果中推断metrics（如果args中没有）
     current_metrics = set(current_args.get('metrics', []))
-    missing_core_metrics = base_args['metrics'] - current_metrics
-    if missing_core_metrics:
-        issues.append(f"缺少核心指标 {missing_core_metrics}")
+    if not current_metrics and 'aggregated' in current_results:
+        agg = current_results['aggregated']
+        if any('psnr' in k for k in agg.keys()):
+            current_metrics.add('psnr')
+        if any('ssim' in k for k in agg.keys()):
+            current_metrics.add('ssim')
+        if any('lpips' in k for k in agg.keys()):
+            current_metrics.add('lpips')
+        if any('clip_score' in k for k in agg.keys()):
+            current_metrics.add('clip_score')
+        if any('subject_consistency' in k for k in agg.keys()):
+            current_metrics.add('vbench')
+    
+    # 只在base_args有metrics时才检查
+    if base_args['metrics']:
+        missing_core_metrics = base_args['metrics'] - current_metrics
+        if missing_core_metrics:
+            issues.append(f"缺少核心指标 {missing_core_metrics}")
     
     return method_name, issues
 
@@ -266,7 +329,7 @@ def load_results():
 
 def plot_image_metrics(df, methods, has_attack, output_dir):
     """绘制图像质量指标对比"""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig, axes = plt.subplots(1, 3, figsize=(20, 7))
     metrics = ['psnr', 'ssim', 'lpips']
     metric_names = ['PSNR (dB)', 'SSIM', 'LPIPS']
     colors = ['#1f77b4', '#ff7f0e', '#d62728']
@@ -383,8 +446,8 @@ def plot_image_metrics(df, methods, has_attack, output_dir):
     print(f"图像质量指标图已保存: {os.path.join(output_dir, filename)}")
 
 def plot_clip_scores(df, methods, has_attack, output_dir):
-    """绘制CLIP分数对比"""
-    fig, ax = plt.subplots(figsize=(12, 6))
+    """绘制CLIP分数对比（图像-视频相似度）"""
+    fig, ax = plt.subplots(figsize=(14, 7))
     colors = ['#1f77b4', '#ff7f0e', '#d62728', '#2ca02c', '#ff1493']
     
     x = np.arange(len(methods))
@@ -467,12 +530,12 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
                 ax.text(j, p_val + (max_val - min_val) * 0.01, f'{p_val:.4f}', 
                        ha='center', va='bottom', fontsize=8, rotation=0)
     
-    ax.set_xlabel('Methods')
-    ax.set_ylabel('CLIP Score')
-    ax.set_title('Video Semantic Similarity (CLIP Score) Comparison')
+    ax.set_xlabel('Methods', fontsize=11)
+    ax.set_ylabel('CLIP Score', fontsize=11)
+    ax.set_title('Video-Image Semantic Similarity (CLIP Score) Comparison', fontsize=12)
     ax.set_xticks(x)
-    ax.set_xticklabels(methods, rotation=45)
-    ax.legend()
+    ax.set_xticklabels(methods, rotation=45, ha='right')
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -480,6 +543,115 @@ def plot_clip_scores(df, methods, has_attack, output_dir):
     plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
     plt.close()
     print(f"CLIP分数图已保存: {os.path.join(output_dir, filename)}")
+
+def plot_clip_video_text_scores(df, methods, has_attack, output_dir):
+    """绘制CLIP视频文本分数对比（视频-文本语义相似度）"""
+    fig, ax = plt.subplots(figsize=(14, 7))
+    colors = ['#1f77b4', '#ff7f0e', '#d62728', '#2ca02c', '#ff1493']
+    
+    x = np.arange(len(methods))
+    width = 0.25
+    
+    original_key = 'original_clip_video_text_score'
+    protected_key = 'protected_clip_video_text_score'
+    attacked_key = 'attacked_clip_video_text_score'
+    upper_bound_key = 'clip_video_text_upper_bound'
+    lower_bound_key = 'clip_video_text_lower_bound'
+    
+    # 检查是否有 video text CLIP score 数据
+    if protected_key not in df.columns:
+        print("未发现CLIP Video-Text分数数据，跳过CLIP Video-Text图表生成")
+        return
+    
+    # 收集所有数值用于计算纵轴范围
+    all_values = []
+    
+    # 获取理论上限和下限
+    upper_bound = df[upper_bound_key].mean() if upper_bound_key in df.columns else None
+    lower_bound = df[lower_bound_key].mean() if lower_bound_key in df.columns else None
+    
+    if has_attack and original_key in df.columns and protected_key in df.columns and attacked_key in df.columns:
+        # 攻击模式：显示原始 vs 保护后 vs 攻击后
+        original_vals = _normalize_values_for_display(df[original_key].values, precision=4)
+        protected_vals = _normalize_values_for_display(df[protected_key].values, precision=4)
+        attacked_vals = _normalize_values_for_display(df[attacked_key].values, precision=4)
+        
+        ax.bar(x - width, original_vals, width, label='Original Video', alpha=0.8, color=colors[0])
+        ax.bar(x, protected_vals, width, label='Protected Video', alpha=0.8, color=colors[1])
+        ax.bar(x + width, attacked_vals, width, label='Attacked Video', alpha=0.8, color=colors[2])
+        
+        all_values.extend(original_vals)
+        all_values.extend(protected_vals)
+        all_values.extend(attacked_vals)
+    elif protected_key in df.columns:
+        # 常规模式：只显示保护后
+        protected_vals = _normalize_values_for_display(df[protected_key].values, precision=4)
+        ax.bar(x, protected_vals, width, label='Protected Video', alpha=0.8, color=colors[1])
+        
+        all_values.extend(protected_vals)
+    
+    # 添加理论上限和下限到all_values用于计算范围
+    if upper_bound is not None:
+        all_values.append(upper_bound)
+    if lower_bound is not None:
+        all_values.append(lower_bound)
+    
+    # 绘制理论上限和下限的水平线
+    if upper_bound is not None:
+        ax.axhline(y=upper_bound, color=colors[3], linestyle='--', linewidth=2, 
+                  label=f'Theoretical Upperbound (Self Comparison): {upper_bound:.4f}', alpha=0.8)
+    if lower_bound is not None:
+        ax.axhline(y=lower_bound, color=colors[4], linestyle='--', linewidth=2, 
+                  label=f'Lowerbound (Random Comparison): {lower_bound:.4f}', alpha=0.8)
+    
+    # 设置合理的纵轴范围
+    if all_values:
+        min_val = min(all_values)
+        max_val = max(all_values)
+        data_range = max_val - min_val
+        
+        # CLIP分数通常在0-1.0之间
+        if data_range < 0.01:
+            center = (min_val + max_val) / 2
+            y_min = max(0.0, center - 0.05)
+            y_max = min(1.0, center + 0.05)
+        else:
+            margin = max(0.02, data_range * 0.1)
+            y_min = max(0.0, min_val - margin)
+            y_max = min(1.0, max_val + margin)
+        
+        tick_step = max(0.05, (y_max - y_min) / 6)
+        ax.set_yticks(np.arange(y_min, y_max + tick_step/2, tick_step))
+        ax.set_ylim(y_min, y_max)
+        
+        # 为数值添加标签显示
+        if has_attack and original_key in df.columns and protected_key in df.columns and attacked_key in df.columns:
+            for j, (o_val, p_val, a_val) in enumerate(zip(original_vals, protected_vals, attacked_vals)):
+                label_offset = (max_val - min_val) * 0.015
+                ax.text(j - width, o_val + label_offset, f'{o_val:.4f}', 
+                       ha='center', va='bottom', fontsize=8, rotation=0)
+                ax.text(j, p_val + label_offset, f'{p_val:.4f}', 
+                       ha='center', va='bottom', fontsize=8, rotation=0)
+                ax.text(j + width, a_val + label_offset, f'{a_val:.4f}', 
+                       ha='center', va='bottom', fontsize=8, rotation=0)
+        elif protected_key in df.columns:
+            for j, p_val in enumerate(protected_vals):
+                ax.text(j, p_val + (max_val - min_val) * 0.015, f'{p_val:.4f}', 
+                       ha='center', va='bottom', fontsize=8, rotation=0)
+    
+    ax.set_xlabel('Methods', fontsize=11)
+    ax.set_ylabel('CLIP Video-Text Score', fontsize=11)
+    ax.set_title('Video-Text Semantic Similarity (CLIP Score) Comparison', fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(methods, rotation=45, ha='right')
+    ax.legend(fontsize=9, loc='best')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    filename = 'attack_clip_video_text_scores.png' if has_attack else 'clip_video_text_scores.png'
+    plt.savefig(os.path.join(output_dir, filename), dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"CLIP Video-Text分数图已保存: {os.path.join(output_dir, filename)}")
 
 def plot_vbench_metrics(df, methods, has_attack, output_dir):
     """绘制VBench指标对比"""
@@ -494,24 +666,38 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
         print("未发现VBench数据，跳过VBench图表生成")
         return
     
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(2, 2, figsize=(20, 14))
     axes = axes.flatten()
     colors = ['#1f77b4', '#ff7f0e', '#d62728']
     
     x = np.arange(len(methods))
-    width = 0.3
+    width = 0.25
     
     for i, (dim, label) in enumerate(zip(vbench_dims, dim_labels)):
         ax = axes[i]
         
         original_key = f'original_{dim}'
         protected_key = f'protected_{dim}'
+        attacked_key = f'attacked_{dim}'
         
         # 收集所有数值用于计算纵轴范围
         all_values = []
         
-        if original_key in df.columns and protected_key in df.columns:
-            # 显示原始 vs 保护后
+        if has_attack and original_key in df.columns and protected_key in df.columns and attacked_key in df.columns:
+            # 攻击模式：显示原始 vs 保护后 vs 攻击后
+            original_vals = _normalize_values_for_display(df[original_key].values, precision=3)
+            protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
+            attacked_vals = _normalize_values_for_display(df[attacked_key].values, precision=3)
+            
+            ax.bar(x - width, original_vals, width, label='Original', alpha=0.8, color=colors[0])
+            ax.bar(x, protected_vals, width, label='Protected', alpha=0.8, color=colors[1])
+            ax.bar(x + width, attacked_vals, width, label='Attacked', alpha=0.8, color=colors[2])
+            
+            all_values.extend(original_vals)
+            all_values.extend(protected_vals)
+            all_values.extend(attacked_vals)
+        elif original_key in df.columns and protected_key in df.columns:
+            # 无攻击模式：显示原始 vs 保护后
             original_vals = _normalize_values_for_display(df[original_key].values, precision=3)
             protected_vals = _normalize_values_for_display(df[protected_key].values, precision=3)
             
@@ -557,23 +743,35 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
             ax.set_ylim(y_min, y_max)
             
             # 为数值添加标签显示
-            if original_key in df.columns and protected_key in df.columns:
+            label_offset = (max_val - min_val) * 0.012
+            if has_attack and original_key in df.columns and protected_key in df.columns and attacked_key in df.columns:
+                # 攻击模式：三组数据
+                for j, (o_val, p_val, a_val) in enumerate(zip(original_vals, protected_vals, attacked_vals)):
+                    ax.text(j - width, o_val + label_offset, f'{o_val:.3f}', 
+                           ha='center', va='bottom', fontsize=7, rotation=0)
+                    ax.text(j, p_val + label_offset, f'{p_val:.3f}', 
+                           ha='center', va='bottom', fontsize=7, rotation=0)
+                    ax.text(j + width, a_val + label_offset, f'{a_val:.3f}', 
+                           ha='center', va='bottom', fontsize=7, rotation=0)
+            elif original_key in df.columns and protected_key in df.columns:
+                # 无攻击模式：两组数据
                 for j, (o_val, p_val) in enumerate(zip(original_vals, protected_vals)):
-                    ax.text(j - width/2, o_val + (max_val - min_val) * 0.01, f'{o_val:.3f}', 
+                    ax.text(j - width/2, o_val + label_offset, f'{o_val:.3f}', 
                            ha='center', va='bottom', fontsize=8, rotation=0)
-                    ax.text(j + width/2, p_val + (max_val - min_val) * 0.01, f'{p_val:.3f}', 
+                    ax.text(j + width/2, p_val + label_offset, f'{p_val:.3f}', 
                            ha='center', va='bottom', fontsize=8, rotation=0)
             elif protected_key in df.columns:
+                # 只有保护数据
                 for j, p_val in enumerate(protected_vals):
-                    ax.text(j, p_val + (max_val - min_val) * 0.01, f'{p_val:.3f}', 
+                    ax.text(j, p_val + label_offset, f'{p_val:.3f}', 
                            ha='center', va='bottom', fontsize=8, rotation=0)
         
-        ax.set_xlabel('Methods')
-        ax.set_ylabel('Score')
-        ax.set_title(f'{label}')
+        ax.set_xlabel('Methods', fontsize=10)
+        ax.set_ylabel('Score', fontsize=10)
+        ax.set_title(f'{label}', fontsize=11)
         ax.set_xticks(x)
-        ax.set_xticklabels(methods, rotation=45)
-        ax.legend()
+        ax.set_xticklabels(methods, rotation=45, ha='right')
+        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -582,7 +780,22 @@ def plot_vbench_metrics(df, methods, has_attack, output_dir):
     print(f"VBench指标图已保存: {os.path.join(output_dir, 'vbench_metrics.png')}")
 
 def plot_attack_effectiveness(df, methods, output_dir):
-    """绘制攻击效果分析（仅在有攻击数据时）"""
+    """绘制攻击效果分析（仅在有攻击数据时）
+    
+    该图表用于评估保护方法在受到攻击后的表现：
+    
+    左图 - PSNR损失（Attack Impact on Image Quality）：
+        - 计算方式: protected_psnr - attacked_psnr
+        - 含义: 攻击导致的图像质量下降程度
+        - 数值越大，说明攻击对图像质量的破坏越严重
+        - 理想情况：数值较小，说明攻击后图像质量仍然保持较好
+    
+    右图 - CLIP鲁棒性（Attack Robustness）：
+        - 计算方式: (attacked_clip_score / protected_clip_score) * 100
+        - 含义: 攻击后语义保持的百分比
+        - 数值越接近100%，说明保护方法越鲁棒，攻击后仍能保持语义相似度
+        - 理想情况：数值接近或大于100%，说明攻击对语义相似度影响小
+    """
     # 检查是否有足够的攻击数据
     has_psnr_attack = 'protected_psnr' in df.columns and 'attacked_psnr' in df.columns
     has_clip_attack = 'protected_clip_score' in df.columns and 'attacked_clip_score' in df.columns
@@ -591,7 +804,7 @@ def plot_attack_effectiveness(df, methods, output_dir):
         print("攻击数据不足，跳过攻击效果分析图")
         return
     
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(18, 7))
     colors = ['#d62728', '#2ca02c']
     
     if has_psnr_attack:
@@ -600,17 +813,18 @@ def plot_attack_effectiveness(df, methods, output_dir):
         psnr_loss = df['protected_psnr'].values - df['attacked_psnr'].values
         
         bars = ax1.bar(methods, psnr_loss, alpha=0.7, color=colors[0])
-        ax1.set_xlabel('Methods')
-        ax1.set_ylabel('PSNR Loss (dB)')
-        ax1.set_title('Attack Impact on Image Quality')
-        ax1.tick_params(axis='x', rotation=45)
+        ax1.set_xlabel('Methods', fontsize=11)
+        ax1.set_ylabel('PSNR Loss (dB)', fontsize=11)
+        ax1.set_title('Attack Impact on Image Quality\n(Lower is Better - Less Quality Loss)', fontsize=12)
+        ax1.tick_params(axis='x', rotation=45, labelsize=10)
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
         ax1.grid(True, alpha=0.3)
         
         # 添加数值标签
         for bar, loss in zip(bars, psnr_loss):
             height = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                    f'{loss:.1f}', ha='center', va='bottom')
+            ax1.text(bar.get_x() + bar.get_width()/2., height + abs(height)*0.02,
+                    f'{loss:.1f}', ha='center', va='bottom', fontsize=9)
     
     if has_clip_attack:
         # 右图：CLIP鲁棒性
@@ -618,19 +832,21 @@ def plot_attack_effectiveness(df, methods, output_dir):
         clip_robustness = df['attacked_clip_score'].values / df['protected_clip_score'].values * 100
         
         bars = ax2.bar(methods, clip_robustness, alpha=0.7, color=colors[1])
-        ax2.axhline(y=100, color='red', linestyle='--', alpha=0.7, label='No Impact')
-        ax2.set_xlabel('Methods')
-        ax2.set_ylabel('Robustness (%)')
-        ax2.set_title('Attack Robustness (Higher is Better)')
-        ax2.tick_params(axis='x', rotation=45)
-        ax2.legend()
+        ax2.axhline(y=100, color='red', linestyle='--', alpha=0.7, linewidth=2, label='No Impact Baseline (100%)')
+        ax2.set_xlabel('Methods', fontsize=11)
+        ax2.set_ylabel('Semantic Robustness (%)', fontsize=11)
+        ax2.set_title('Attack Robustness on Semantic Similarity\n(Higher is Better - More Robust)', fontsize=12)
+        ax2.tick_params(axis='x', rotation=45, labelsize=10)
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45, ha='right')
+        ax2.legend(fontsize=9)
         ax2.grid(True, alpha=0.3)
         
         # 添加数值标签
         for bar, rob in zip(bars, clip_robustness):
             height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height + 2,
-                    f'{rob:.1f}%', ha='center', va='bottom')
+            y_offset = max(2, (ax2.get_ylim()[1] - ax2.get_ylim()[0]) * 0.02)
+            ax2.text(bar.get_x() + bar.get_width()/2., height + y_offset,
+                    f'{rob:.1f}%', ha='center', va='bottom', fontsize=9)
     
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'attack_effectiveness.png'), dpi=300, bbox_inches='tight')
@@ -643,7 +859,7 @@ def plot_time_metrics(df, methods, output_dir):
         print("未找到时间指标数据，跳过时间图表生成")
         return
         
-    fig, ax = plt.subplots(figsize=(12, 6))
+    fig, ax = plt.subplots(figsize=(14, 7))
     colors = ['#1f77b4', '#ff7f0e', '#d62728']
     
     x = np.arange(len(methods))
@@ -769,11 +985,11 @@ def plot_time_metrics(df, methods, output_dir):
             bar.set_height(min_visible_height)
             print(f"为方法 {methods[i]} 设置最小可见高度")
     
-    ax.set_xlabel('Methods')
-    ax.set_ylabel('Time per Image (ms)')
-    ax.set_title('Processing Time Comparison')
+    ax.set_xlabel('Methods', fontsize=11)
+    ax.set_ylabel('Time per Image (ms)', fontsize=11)
+    ax.set_title('Processing Time Comparison', fontsize=12)
     ax.set_xticks(x)
-    ax.set_xticklabels(methods, rotation=45)
+    ax.set_xticklabels(methods, rotation=45, ha='right')
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -783,12 +999,14 @@ def plot_time_metrics(df, methods, output_dir):
 
 
 def _load_experiment_data(experiment_dirs):
-    """从实验目录加载数据"""
+    """从实验目录加载数据，支持分离的实验格式"""
     data = []
     has_attack = False
     
     for exp_dir in experiment_dirs:
         results_path = os.path.join(exp_dir, "results", "benchmark_results.json")
+        time_stats_path = os.path.join(exp_dir, "results", "time_stats.json")
+        
         if not os.path.exists(results_path):
             print(f"⚠️ 跳过缺少结果文件的实验: {os.path.basename(exp_dir)}")
             continue
@@ -799,8 +1017,20 @@ def _load_experiment_data(experiment_dirs):
         # 准备DataFrame数据
         row = {'method': result['method']}
         row.update(result['aggregated'])
+        
+        # 尝试从time字段或time_stats.json读取时间数据
         if 'time' in result:
             row.update(result['time'])
+        elif os.path.exists(time_stats_path):
+            with open(time_stats_path, 'r') as f:
+                time_stats = json.load(f)
+            # 提取时间信息，支持多种字段名
+            if 'time_per_image' in time_stats:
+                row['time_per_image'] = time_stats['time_per_image']
+            elif 'avg_time_per_image' in time_stats:
+                row['time_per_image'] = time_stats['avg_time_per_image']
+            elif 'time_per_sample' in time_stats:
+                row['time_per_image'] = time_stats['time_per_sample']
         
         # 检查是否有攻击数据
         if any('attacked_' in key for key in result['aggregated'].keys()):
@@ -819,11 +1049,13 @@ def _generate_plots(df, methods, has_attack, output_dir):
     """生成所有图表"""
     plot_image_metrics(df, methods, has_attack, output_dir)
     plot_clip_scores(df, methods, has_attack, output_dir)
+    plot_clip_video_text_scores(df, methods, has_attack, output_dir)
     plot_vbench_metrics(df, methods, has_attack, output_dir)
     plot_time_metrics(df, methods, output_dir)
     
-    if has_attack:
-        plot_attack_effectiveness(df, methods, output_dir)
+    # 攻击效果分析图已禁用
+    # if has_attack:
+    #     plot_attack_effectiveness(df, methods, output_dir)
 
 def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: str = None) -> bool:
     """
@@ -877,6 +1109,9 @@ def generate_batch_visualizations(output_base_dir: str = "outputs", output_dir: 
         df = pd.DataFrame(data)
         methods = df['method'].tolist()
         
+        # 确保输出目录存在
+        os.makedirs(output_dir, exist_ok=True)
+        
         _setup_matplotlib_style()
         
         print(f"检测到 {len(methods)} 个方法: {methods}")
@@ -906,10 +1141,17 @@ def main():
     print("ImageProtectionBench 批次实验对比可视化工具")
     print("="*60)
     
-    # 搜索实验目录
-    output_base_dir = "outputs_skyreels_AFHQ-V2"
+    # 搜索实验目录 - 支持命令行参数
+    import sys
+    if len(sys.argv) > 1:
+        output_base_dir = sys.argv[1]
+    else:
+        output_base_dir = "/data_sde/lxf/ImageProtectionBench/EXP_Skyreel_AFHQ-V2"
+    
     if not os.path.exists(output_base_dir):
         print(f"❌ 未找到输出目录: {output_base_dir}")
+        print(f"用法: python {sys.argv[0]} <实验目录路径>")
+        print(f"示例: python {sys.argv[0]} /data_sde/lxf/ImageProtectionBench/EXP_Skyreel_AFHQ-V2")
         return
     
     # 查找所有实验目录
@@ -969,24 +1211,11 @@ def main():
         print(f"📁 图表保存位置: {os.path.abspath(output_dir)}")
         
         print(f"\n生成的图表包括:")
-        print(f"  - image_metrics.png: 图像质量指标对比")
-        print(f"  - clip_scores.png: CLIP语义相似度对比")
+        print(f"  - image_metrics.png: 图像质量指标对比（PSNR, SSIM, LPIPS）")
+        print(f"  - clip_scores.png: CLIP视频-图像语义相似度对比")
+        print(f"  - clip_video_text_scores.png: CLIP视频-文本语义相似度对比")
         print(f"  - vbench_metrics.png: VBench视频质量指标对比")
         print(f"  - time_metrics.png: 处理时间对比")
-        
-        # 检查是否有攻击数据
-        pattern = os.path.join(output_base_dir, "*/results/benchmark_results.json")
-        json_files = glob.glob(pattern)
-        has_attack = False
-        for file_path in json_files:
-            with open(file_path, 'r') as f:
-                result = json.load(f)
-            if any('attacked_' in key for key in result['aggregated'].keys()):
-                has_attack = True
-                break
-        
-        if has_attack:
-            print(f"  - attack_effectiveness.png: 攻击效果分析")
             
     else:
         print(f"\n❌ 对比可视化图表生成失败")
