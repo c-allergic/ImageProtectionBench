@@ -1,11 +1,3 @@
-# Experimental data folders
-EXP_LTX_AFHQ-V2/
-EXP_LTX_Flickr30k/
-EXP_LTX_LHQ/
-EXP_Skyreel_AFHQ-V2/
-EXP_Skyreel_Flickr30k/
-EXP_Skyreel_LHQ/
-
 # Test videos
 test_videos/
 
@@ -36,3 +28,30 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+EXP_outputs_flickr30k/
+evaluation_result/
+explosion_prompt.py
+explosion_prompts.json
+figs/AFHQ-V2_Skyreel/attack_clip_scores.png
+figs/AFHQ-V2_Skyreel/attack_clip_video_text_scores.png
+figs/AFHQ-V2_Skyreel/attack_image_metrics.png
+figs/AFHQ-V2_WAN/
+figs/Flickr30k_Skyreel/attack_clip_scores.png
+figs/Flickr30k_Skyreel/attack_clip_video_text_scores.png
+figs/Flickr30k_Skyreel/attack_image_metrics.png
+figs/Flickr30k_WAN/
+figs/LHQ_Skyreel/
+figs/LHQ_WAN/
+figs/quality_alignment.png
+figs/quality_alignment_vt.png
+generate_videos_fixed_prompt.py
+harmful_content_rate.py
+protection/MIST.png
+protection/dct_ops.py
+protection/instruct-pix2pix-main/
+protection/ldm/
+protection/loss_curves.png
+protection/losses.py
+protection/wan_wrapper.py
+video_explosion_detection.py

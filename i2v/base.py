@@ -515,7 +515,8 @@ class WAN22Model(I2VModelBase):
             dit_fsdp=False,
             use_sp=False,
             t5_cpu=False,
-            convert_model_dtype=False,
+            init_on_cpu=False,  # 将DiT模型加载到GPU
+            convert_model_dtype=True,  # 转换模型dtype为bfloat16，确保bias也是bfloat16
         )
         
         # 保存配置信息

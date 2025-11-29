@@ -20,7 +20,7 @@ def main():
     num_samples = 150
     device = "cuda:2"
 
-    images, _ = load_dataset("LHQ", num_samples, data_path, generate_descriptions=False, device=device)
+    images, _ = load_dataset("Flickr30k", num_samples, data_path, generate_descriptions=False, device=device)
     
     if not images:
         print("未找到图像，请先运行数据加载脚本")
@@ -36,7 +36,7 @@ def main():
     output_dir = f"/data_sde/lxf/ImageProtectionBench/data/descriptions"
     os.makedirs(output_dir, exist_ok=True)
     
-    output_file = os.path.join(output_dir, "lhq_descriptions_exp.json")
+    output_file = os.path.join(output_dir, "flickr30k_descriptions.json")
     with open(output_file, "w", encoding="utf-8") as f:
         import json
         json.dump(descriptions_dict, f, ensure_ascii=False, indent=2)

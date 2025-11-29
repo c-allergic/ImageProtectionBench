@@ -7,7 +7,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse
 import datetime
@@ -19,8 +19,8 @@ from pathlib import Path
 from diffusers.utils import export_to_video
 
 from i2v import WAN22Model, LTXModel, SkyreelModel
-from data import transform, pt_to_pil
-
+from data import pt_to_pil
+import torchvision.transforms.functional as TF
 
 def load_image_pairs(input_dir):
     """从输入目录加载图片对和对应的prompt，包括攻击图片（如果存在）"""
@@ -93,17 +93,7 @@ def load_prompts(input_path):
         data_path = args_data.get('data_path', './data')
         num_samples = args_data.get('num_samples', 150)
         
-        # 直接尝试所有可能的描述文件名
-        possible_files = [
-            Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions_exp.json",
-            Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions.json"
-        ]
-        
-        prompt_file = None
-        for file_path in possible_files:
-            if file_path.exists():
-                prompt_file = file_path
-                break
+        prompt_file = Path(data_path) / "descriptions" / f"{dataset.lower()}_descriptions_exp.json"
         
         if prompt_file:
             with open(prompt_file, 'r') as f:
@@ -169,7 +159,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                 try:
                     # 加载并转换图片
                     orig_img = Image.open(pair['original']).convert('RGB')
-                    orig_tensor = transform(orig_img).unsqueeze(0).to(i2v_model.device)
+                    orig_tensor = TF.to_tensor(orig_img).unsqueeze(0).to(i2v_model.device)
                     
                     print(f"  使用恶意prompt: {malicious_prompt}")
                     # 生成视频
@@ -199,7 +189,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                     # 加载并转换图片（如果之前已经加载过，可以重用）
                     if 'orig_tensor' not in locals():
                         orig_img = Image.open(pair['original']).convert('RGB')
-                        orig_tensor = transform(orig_img).unsqueeze(0).to(i2v_model.device)
+                        orig_tensor = TF.to_tensor(orig_img).unsqueeze(0).to(i2v_model.device)
                     
                     print(f"  使用正常prompt: {normal_prompt}")
                     # 生成视频
@@ -228,7 +218,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                 try:
                     # 加载并转换图片
                     prot_img = Image.open(pair['protected']).convert('RGB')
-                    prot_tensor = transform(prot_img).unsqueeze(0).to(i2v_model.device)
+                    prot_tensor = TF.to_tensor(prot_img).unsqueeze(0).to(i2v_model.device)
                     
                     print(f"  使用恶意prompt: {malicious_prompt}")
                     # 生成视频
@@ -258,7 +248,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                     # 加载并转换图片（如果之前已经加载过，可以重用）
                     if 'prot_tensor' not in locals():
                         prot_img = Image.open(pair['protected']).convert('RGB')
-                        prot_tensor = transform(prot_img).unsqueeze(0).to(i2v_model.device)
+                        prot_tensor = TF.to_tensor(prot_img).unsqueeze(0).to(i2v_model.device)
                     
                     print(f"  使用正常prompt: {normal_prompt}")
                     # 生成视频
@@ -290,7 +280,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                     try:
                         # 加载并转换攻击后的图片
                         attack_img = Image.open(pair['attacked']).convert('RGB')
-                        attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                        attack_tensor = TF.to_tensor(attack_img).unsqueeze(0).to(i2v_model.device)
                         
                         print(f"  攻击后图片使用恶意prompt: {malicious_prompt}")
                         # 生成视频
@@ -322,7 +312,7 @@ def generate_videos_batch(image_pairs, i2v_model, videos_dir, prompts=None):
                         # 加载并转换攻击后的图片（如果之前已经加载过，可以重用）
                         if 'attack_tensor' not in locals():
                             attack_img = Image.open(pair['attacked']).convert('RGB')
-                            attack_tensor = transform(attack_img).unsqueeze(0).to(i2v_model.device)
+                            attack_tensor = TF.to_tensor(attack_img).unsqueeze(0).to(i2v_model.device)
                         
                         print(f"  攻击后图片使用正常prompt: {normal_prompt}")
                         # 生成视频
@@ -367,7 +357,7 @@ def main():
                        help="输出目录，默认为input_dir")
     
     # I2V模型参数 - 参照benchmark.py
-    parser.add_argument('--i2v_model', type=str, default="Skyreel", 
+    parser.add_argument('--i2v_model', type=str, default="WAN", 
                        choices=["LTX", "WAN", "Skyreel"],
                        help="I2V模型类型")
     

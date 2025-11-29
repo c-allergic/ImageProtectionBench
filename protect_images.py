@@ -6,7 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import argparse
 import datetime
 import json
@@ -68,7 +68,7 @@ def initialize_attack_method(attack_type: str, device: str):
     return attack_method
 
 
-def protect_images_batch(images, protection_method, batch_size=10, attack_method=None):
+def protect_images_batch(images, protection_method, batch_size=5, attack_method=None):
     """批量保护图片，参照experiment.py的批次处理逻辑"""
     total_images = len(images)
     attack_info = f"，攻击方法: {attack_method.__class__.__name__}" if attack_method else "，无攻击"
@@ -88,19 +88,28 @@ def protect_images_batch(images, protection_method, batch_size=10, attack_method
         
         print(f"\n=== 处理批次 {batch_num} ({i+1}-{batch_end}) ===")
         
-        # 转换为张量
-        original_tensors = []
-        for img_pil in batch_images:
-            img_tensor = transform(img_pil).to(protection_method.device)
-            original_tensors.append(img_tensor)
-        original_tensors = torch.stack(original_tensors)
-        
-        # 应用保护
-        start_time = time.time()
-        protected_tensors = protection_method.protect_multiple(original_tensors)
+        # ExpGuard需要原始PIL Image以避免双重resize，其他方法使用transform
+        if isinstance(protection_method, ExpGuard):
+            original_images = batch_images  # 直接使用PIL Image列表
+            
+            # 应用保护
+            start_time = time.time()
+            protected_tensors = protection_method.protect_multiple(original_images)
+        else:
+            # 其他保护方法使用transform转换为tensor
+            original_tensors = []
+            for img_pil in batch_images:
+                img_tensor = transform(img_pil).to(protection_method.device)
+                original_tensors.append(img_tensor)
+            original_tensors = torch.stack(original_tensors)
+            
+            # 应用保护
+            start_time = time.time()
+            protected_tensors = protection_method.protect_multiple(original_tensors)
         protection_elapsed = time.time() - start_time
         
-        batch_size_actual = original_tensors.size(0)
+        # 获取批次大小（ExpGuard返回tensor，其他方法也返回tensor）
+        batch_size_actual = protected_tensors.size(0) if isinstance(protected_tensors, torch.Tensor) else len(batch_images)
         total_protection_time += protection_elapsed
         total_images_processed += batch_size_actual
         
@@ -124,7 +133,11 @@ def protect_images_batch(images, protection_method, batch_size=10, attack_method
                 all_attacked_images.append(attacked_pil)
         
         # 清理显存
-        del original_tensors, protected_tensors
+        if isinstance(protection_method, ExpGuard):
+            # ExpGuard使用PIL Image，不需要删除original_tensors
+            del protected_tensors
+        else:
+            del original_tensors, protected_tensors
         if attacked_tensors is not None:
             del attacked_tensors
         if torch.cuda.is_available():
@@ -184,7 +197,7 @@ def main():
     
     # 数据集参数
     parser.add_argument('--dataset', type=str, default="Flickr30k", choices=DATASETS)
-    parser.add_argument('--num_samples', type=int, default=10) 
+    parser.add_argument('--num_samples', type=int, default=50) 
     parser.add_argument('--data_path', type=str, default="./data")
     
     # 保护方法参数
@@ -200,11 +213,11 @@ def main():
                        help="攻击类型")
     
     # 处理参数
-    parser.add_argument('--batch_size', type=int, default=10)
+    parser.add_argument('--batch_size', type=int, default=1)
     
     # 系统参数
     parser.add_argument('--device', type=str, default="cuda")
-    parser.add_argument('--output_dir', type=str, default="EXP_Skyreel_Flickr30k")
+    parser.add_argument('--output_dir', type=str, default="EXP_outputs_flickr30k")
     
     args = parser.parse_args()
     

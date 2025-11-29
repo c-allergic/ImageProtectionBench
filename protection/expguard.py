@@ -1,478 +1,603 @@
 """
-ExpGuard - 防止爆炸语义prompt的图生视频攻击
-借鉴Tarpro的目标函数，优化对抗损失和正则化损失
-改进：使用 YCbCr 颜色空间的中频频域扰动
+ExpGuard Protection Module - Refactored
+
+This module implements the ExpGuard protection algorithm for defending against
+adversarial image-to-video generation attacks. It uses attention-based loss
+functions and DCT frequency domain perturbations.
+
+Key Features:
+- Target-based optimization strategy (steering toward meaningless outputs)
+- DCT mid-frequency domain perturbation for JPEG robustness
+- YCbCr color space manipulation (only Cb/Cr channels)
+- Modular architecture with clean separation of concerns
+- Type-hinted interfaces and comprehensive documentation
 """
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Union, List
-from .base import ProtectionBase
-from data import pt_to_pil
 import kornia.color as K_color
 from tqdm import tqdm
 from matplotlib import pyplot as plt
 import os
-import json
+import copy
 import logging
+from dataclasses import dataclass
+from typing import Optional, Dict, List
+from PIL import Image
+
+# Import refactored modules
+from .dct_ops import DifferentiableDCT, create_mid_freq_mask
+from .wan_wrapper import WanModelWrapper
+from .losses import AttackLoss, AttentionHook, HookRegistrar
+from .base import ProtectionBase
+
 logging.getLogger().setLevel(logging.ERROR)
 
-class FrequencyNoiseGenerator(nn.Module):
+
+@dataclass
+class AttackConfig:
     """
-    在 YCbCr 的 Cb 和 Cr 通道上生成多频段扰动（低频、中频、高频）
+    Configuration for the ExpGuard attack.
+    
+    Attributes:
+        num_steps: Number of optimization iterations
+        learning_rate: Initial learning rate for Adam optimizer
+        epsilon: Maximum perturbation magnitude (in [0, 1] range)
+        mid_freq_ratio_low: Lower bound of mid-frequency band
+        mid_freq_ratio_high: Upper bound of mid-frequency band
+        weight_target: Weight for target (black image) loss
+        weight_baseline: Weight for baseline (normal prompt) loss
+        weight_constraint: Weight for constraint loss
+        timestep_min: Minimum timestep for random sampling (0-1000)
+        timestep_max: Maximum timestep for random sampling (0-1000)
+        use_random_timestep: Whether to use random timestep sampling
+        resample_timestep_per_step: Whether to resample timestep at each optimization step
+        y_channel_weight: Weight for Y channel perturbation (relative to CbCr)
     """
-    
-    def __init__(self, H: int, W: int, device: torch.device, 
-                 low_freq_ratio: float = 0.05,    # 低频扰动范围
-                 mid_freq_max: float = 0.3,        # 中频上界
-                 high_freq_ratio: float = 0.6,     # 高频扰动范围
-                 init_scale: float = 0.1,          # 初始化噪声的标准差
-                 freq_weights: dict = None):       # 频段权重
-        """
-        初始化多频段噪声参数
-        
-        Args:
-            H, W: 图像高度和宽度
-            device: 设备
-            low_freq_ratio: 低频内半径比例
-            mid_freq_max: 中频上界
-            high_freq_ratio: 高频外半径比例
-            init_scale: 初始化噪声的标准差
-            freq_weights: 频段权重字典
-        """
-        super().__init__()
-        
-        self.H, self.W = H, W
-        
-        # 设置频段权重
-        if freq_weights is None:
-            self.freq_weights = {'low': 1.0, 'mid': 1.0, 'high': 0.5}
-        else:
-            self.freq_weights = freq_weights
-        
-        # 为不同频段分配不同参数
-        self.noise_low = nn.Parameter(torch.randn(2, H, W, device=device) * init_scale)
-        self.noise_mid = nn.Parameter(torch.randn(2, H, W, device=device) * init_scale)  
-        self.noise_high = nn.Parameter(torch.randn(2, H, W, device=device) * init_scale)
-        
-        # 创建并注册多频段掩码
-        self.register_buffer('low_freq_mask', self._create_freq_mask(H, W, 0, low_freq_ratio))
-        self.register_buffer('mid_freq_mask', self._create_freq_mask(H, W, low_freq_ratio, mid_freq_max))
-        self.register_buffer('high_freq_mask', self._create_freq_mask(H, W, mid_freq_max, high_freq_ratio))
-    
-    def _create_freq_mask(self, H: int, W: int, r_min_ratio: float, r_max_ratio: float) -> torch.Tensor:
-        """
-        创建频段掩码
-        
-        Args:
-            H, W: 图像高度和宽度
-            r_min_ratio: 内半径比例
-            r_max_ratio: 外半径比例
-            
-        Returns: [2, H, W] 的掩码，值为 1.0（目标频段）或 0.0（其他频段）
-        """
-        # 计算频率坐标（中心化）
-        freq_y = torch.fft.fftfreq(H).reshape(-1, 1)  # [H, 1]
-        freq_x = torch.fft.fftfreq(W).reshape(1, -1)  # [1, W]
-        
-        # 计算每个频率点到中心的距离（归一化）
-        distance = torch.sqrt(freq_y**2 + freq_x**2)  # [H, W]
-        
-        # 定义频段范围
-        max_freq = 0.5  # Nyquist 频率
-        r_min = r_min_ratio * max_freq
-        r_max = r_max_ratio * max_freq
-        
-        # 创建环形掩码
-        mask = ((distance >= r_min) & (distance <= r_max)).float()  # [H, W]
-        
-        # 为 Cb 和 Cr 两个通道复制
-        mask = mask.unsqueeze(0).repeat(2, 1, 1)  # [2, H, W]
-        
-        return mask
-    
-    def forward(self, image_ycbcr: torch.Tensor) -> torch.Tensor:
-        """
-        对 YCbCr 图像的 Cb/Cr 通道进行多频段扰动
-        
-        Args:
-            image_ycbcr: [B, 3, H, W], YCbCr 图像
-            
-        Returns:
-            perturbed_ycbcr: [B, 3, H, W], 扰动后的 YCbCr 图像
-        """
-        B, C, H, W = image_ycbcr.shape
-        
-        # 分离 Y 和 CbCr 通道
-        Y = image_ycbcr[:, 0:1, :, :]      # [B, 1, H, W]
-        CbCr = image_ycbcr[:, 1:3, :, :]   # [B, 2, H, W]
-        
-        # 1. DFT 变换到频域
-        CbCr_freq = torch.fft.fft2(CbCr)  # [B, 2, H, W] 复数
-        
-        # 2. 构造多频段噪声
-        # 低频噪声
-        noise_low_complex = torch.complex(self.noise_low, torch.zeros_like(self.noise_low))
-        masked_noise_low = noise_low_complex * self.low_freq_mask
-        
-        # 中频噪声
-        noise_mid_complex = torch.complex(self.noise_mid, torch.zeros_like(self.noise_mid))
-        masked_noise_mid = noise_mid_complex * self.mid_freq_mask
-        
-        # 高频噪声
-        noise_high_complex = torch.complex(self.noise_high, torch.zeros_like(self.noise_high))
-        masked_noise_high = noise_high_complex * self.high_freq_mask
-        
-        # 3. 合并所有频段的噪声（应用权重）
-        total_noise = (self.freq_weights['low'] * masked_noise_low + 
-                      self.freq_weights['mid'] * masked_noise_mid + 
-                      self.freq_weights['high'] * masked_noise_high)  # [2, H, W]
-        
-        # 4. 扩展到 batch 维度并加到频域上
-        total_noise_batch = total_noise.unsqueeze(0).repeat(B, 1, 1, 1)  # [B, 2, H, W]
-        perturbed_CbCr_freq = CbCr_freq + total_noise_batch
-        
-        # 5. IDFT 转换回空间域
-        perturbed_CbCr = torch.fft.ifft2(perturbed_CbCr_freq).real  # [B, 2, H, W]
-        
-        # 6. 组合 Y 和扰动后的 CbCr
-        perturbed_ycbcr = torch.cat([Y, perturbed_CbCr], dim=1)  # [B, 3, H, W]
-        
-        return perturbed_ycbcr
+    num_steps: int = 50
+    learning_rate: float = 1e-2
+    epsilon: float = 16.0 / 255.0
+    mid_freq_ratio_low: float = 0.1
+    mid_freq_ratio_high: float = 0.5
+    weight_target: float = 1.0
+    weight_baseline: float = 1.0
+    weight_constraint: float = 10.0
+    timestep_min: int = 200
+    timestep_max: int = 800
+    use_random_timestep: bool = True
+    resample_timestep_per_step: bool = False
+    y_channel_weight: float = 0.3
 
 
 class ExpGuard(ProtectionBase):
     """
-    ExpGuard防护算法
+    ExpGuard protection algorithm - Target-based attention attack.
     
-    目标：防止用户使用带有爆炸语义的prompt对图片进行图生视频操作
-    方法：借鉴Tarpro目标函数，优化两个loss：
-    - L_adv: 对抗损失，使(加扰图片+爆炸prompt)输出远离(原图+正常prompt)
-    - L_reg: 正则化损失，保证(加扰图片+正常prompt)与(原图+正常prompt)相似
+    This class implements a sophisticated defense mechanism against adversarial
+    image-to-video generation. Instead of simply maximizing distance from the
+    original output, it steers the perturbed image toward a meaningless target
+    (outputs from a black image).
+    
+    The attack operates in the DCT frequency domain on YCbCr color channels,
+    specifically targeting mid-frequency components in Cb/Cr channels. This
+    approach provides robustness to JPEG compression while maintaining visual
+    imperceptibility.
+    
+    Key Features:
+    - Random timestep sampling for improved robustness across diffusion steps
+    - Gradient checkpointing for memory efficiency
+    - DCT mid-frequency perturbation for JPEG robustness
+    - Optional Y (luminance) channel perturbation for stronger attacks
+    
+    Architecture:
+    1. DifferentiableDCT: Handles DCT/IDCT transformations
+    2. WanModelWrapper: Manages model loading and preprocessing
+    3. AttackLoss: Computes optimization objectives
+    4. AttentionHook: Captures intermediate activations
+    
+    Example:
+        >>> config = AttackConfig(
+        ...     num_steps=100,
+        ...     epsilon=20/255,
+        ...     use_random_timestep=True,
+        ...     timestep_min=200,
+        ...     timestep_max=800,
+        ...     y_channel_weight=0.3
+        ... )
+        >>> expguard = ExpGuard(device='cuda', config=config)
+        >>> protected = expguard.protect(pil_image)
+    
+    Attributes:
+        device: Device for computation ('cuda' or 'cpu')
+        config: Attack configuration parameters
+        dct_op: Differentiable DCT operator
+        model_wrapper: Wan model wrapper
+        loss_calculator: Loss function calculator
+        hook_manager: Attention hook manager
     """
+    
+    def __init__(
+        self,
+        device: str = "cuda",
+        config: Optional[AttackConfig] = None,
+        **kwargs
+    ):
+        """
+        Initialize ExpGuard protection.
+        
+        Args:
+            device: Device for computation
+            config: Attack configuration (uses defaults if None)
+            **kwargs: Additional arguments passed to ProtectionBase
+        """
+        self.device = device
+        
+        # Store config early (before super().__init__) so _setup_model can access it
+        # We need to use a temporary variable because parent will overwrite self.config
+        self._attack_config = config if config is not None else AttackConfig()
+        
+        # Initialize components
+        self.dct_op = DifferentiableDCT()
+        self.model_wrapper: Optional[WanModelWrapper] = None
+        self.loss_calculator = AttackLoss()
+        self.hook_manager = AttentionHook()
+        
+        # Prompts for different targets
+        self.explosion_prompt = (
+            "massive explosion with intense fireballs and shockwaves, "
+            "violent blast with debris and fragments flying in all directions, "
+            "dramatic orange and red flames engulfing the scene, "
+            "thick black smoke billowing upwards, "
+            "destruction and chaos with shattered objects, "
+            "high contrast lighting from the explosion, "
+            "cinematic action scene, photorealistic, highly detailed"
+        )
+        
+        self.normal_prompt = (
+            "peaceful and serene natural scene with soft gentle movement, "
+            "calm atmosphere with warm natural lighting, "
+            "tranquil environment with subtle changes, "
+            "harmonious composition with balanced colors, "
+            "quiet and stable setting"
+        )
+        
+        # Call parent __init__ (parent sets self.config = kwargs as dict)
+        super().__init__(device=device, **kwargs)
+        
+        # Override self.config with dataclass AFTER parent init
+        # This prevents parent's dict assignment from overwriting our dataclass
+        self.config = self._attack_config
+        print(f"ExpGuard config: {self.config}")
     
     def _setup_model(self):
         """
-        初始化ExpGuard模型参数
+        Initialize the Wan model wrapper and register hooks.
+        
+        This method is called by the parent ProtectionBase class during initialization.
+        Note: We use self._attack_config here because self.config is still a dict at this point.
         """
-        # 默认超参数
-        self.eps = 8 / 255  # 扰动强度上界
-        self.num_steps = 50  # 优化迭代次数
-        self.lr = 0.85
-        self.lambda_reg = 0.2  # 正则化损失权重
-        self.init_scale = 0.1 
-        self.lr_scheduler_type = "cosine"  # 学习率调度器类型
-        
-        # 多频段扰动配置
-        self.freq_weights = {'low': 3, 'mid': 6, 'high': 3}
-        
-        # 显存优化配置
-        self.gradient_frame_ratio = 0.5  
-        self.gradient_frame_strategy = "uniform"
-        
-        # 初始化图生视频生成器
-        self._setup_generator()
-    def _setup_generator(self):
-        """
-        加载SVD DiffusionEngine为统一特征提取器/视频生成pipeline
-        """
-        import sys, os
-        sys.path.append('/data_sde/lxf/generative-models') 
-        from omegaconf import OmegaConf
-        from sgm.util import instantiate_from_config
-        svd_config = OmegaConf.load('/data_sde/lxf/generative-models/scripts/sampling/configs/svd.yaml')
-        self.svd_pipe = instantiate_from_config(svd_config["model"]).to(self.device)
-        
-        # 设置采样器参数（优化显存使用）
-        self.svd_num_steps = 25  # 采样步数（用于计算sigma）
-        # 注意：实际不使用完整采样，仅单步denoising以节省显存
-        
-        # 预定义prompt
-        self.y_exp = "explosion, bomb blast, fire and destruction, debris flying everywhere"
-        self.y_nor = "peaceful scene, calm and serene environment, gentle natural movement"
-    
-        
-    @torch.enable_grad()
-    def protect(self, image: torch.Tensor, **kwargs) -> torch.Tensor: # 使用 YCbCr 频域中频扰动保护图片免受爆炸语义prompt攻击
-        assert image.dim() == 3 and image.size(0) in {3, 4}
-        
-        # 将图片移到设备并添加batch维度
-        I0_rgb = image.unsqueeze(0).to(self.device)  # [1, C, H, W], RGB [0,1]
-        _, C, H, W = I0_rgb.shape
-        
-        # 1. 初始化多频段噪声生成器
-        noise_generator = FrequencyNoiseGenerator(
-            H, W, self.device, 
-            low_freq_ratio=0.05,    # 低频扰动范围 [0, 0.05]
-            mid_freq_max=0.3,       # 中频上界 [0.05, 0.3]
-            high_freq_ratio=0.6,    # 高频扰动范围 [0.3, 0.6]
-            init_scale=self.init_scale,
-            freq_weights=self.freq_weights  # 传递频段权重
-        ).to(self.device)
-        optimizer = torch.optim.Adam(
-            list(noise_generator.parameters()),
-            lr=self.lr
+        print("Loading WAN22Model...")
+        self.model_wrapper = WanModelWrapper(
+            device=self.device,
         )
         
-        # 2. 创建学习率调度器
-        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.num_steps, eta_min=self.lr * 0.01)
+        if self.model_wrapper.is_loaded():
+            # Set hook manager in wrapper
+            self.model_wrapper.set_hook_manager(self.hook_manager)
+            
+            # Register attention hooks
+            HookRegistrar.register_attention_hooks(
+                self.model_wrapper.wan_model,
+                self.hook_manager
+            )
+            print("Attention hooks registered successfully")
+        else:
+            raise RuntimeError("Failed to load WAN22Model")
+    
+    def protect_multiple(
+        self,
+        images: List[Image.Image],
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Protect multiple images in batch.
         
-        # 2. 计算原图的基准输出（预计算，避免重复生成）
-        # 显存优化信息输出
-        num_gradient_frames = max(1, int(16 * self.gradient_frame_ratio))
+        Args:
+            images: List of PIL Image objects
+            **kwargs: Additional arguments passed to protect()
+            
+        Returns:
+            protected_images: [B, C, H, W] tensor of protected images
+        """
+        if not isinstance(images, list):
+            raise ValueError(f"ExpGuard.protect_multiple() expects list of PIL Images, got {type(images)}")
         
+        if len(images) == 0:
+            raise ValueError("Image list cannot be empty")
+        
+        if not all(isinstance(img, Image.Image) for img in images):
+            raise ValueError("All elements must be PIL Image objects")
+        
+        protected_images = []
+        for img_pil in images:
+            protected_single = self.protect(img_pil, **kwargs)
+            protected_images.append(protected_single)
+            
+            # Memory cleanup after each image
+            torch.cuda.empty_cache()
+        
+        return torch.stack(protected_images)
+    
+    @torch.enable_grad()
+    def protect(self, image: Image.Image) -> torch.Tensor:
+        """
+        Protect a single image using target-based attention attack.
+        
+        This method implements the core protection algorithm:
+        1. Preprocess image (resize, normalize)
+        2. Generate target activations (from black image)
+        3. Generate baseline activations (from original image)
+        4. Optimize DCT-domain noise to minimize target loss
+        5. Apply final perturbation and return protected image
+        
+        Args:
+            image: PIL Image object (will be preprocessed internally)
+            
+        Returns:
+            protected_image: [C, H, W] tensor in range [0, 1]
+        """
+        if not isinstance(image, Image.Image):
+            raise ValueError(f"ExpGuard.protect() expects PIL Image, got {type(image)}")
+        
+        print("Preprocessing image...")
+        I0_preprocessed = self.model_wrapper.preprocess_image(image)
+        
+        # Convert to RGB format for DCT processing
+        # [C, 1, H, W] -> [1, C, H, W], range [-1, 1] -> [0, 1]
+        I0_rgb = I0_preprocessed.squeeze(1).unsqueeze(0)
+        I0_rgb = (I0_rgb + 1.0) / 2.0
+        I0_rgb = torch.clamp(I0_rgb, 0, 1)
+        
+        _, C, H, W = I0_rgb.shape
+        
+        # Step 1: Convert to YCbCr and extract channels
+        I0_ycbcr = K_color.rgb_to_ycbcr(I0_rgb)
+        y0 = I0_ycbcr[:, 0:1]
+        cb0 = I0_ycbcr[:, 1:2]
+        cr0 = I0_ycbcr[:, 2:3]
+        
+        # Step 2: DCT transformation
+        y0_dct = self.dct_op.forward(y0)
+        cb0_dct = self.dct_op.forward(cb0)
+        cr0_dct = self.dct_op.forward(cr0)
+        
+        # Step 3: Initialize learnable DCT-domain noise
+        scale = 5.0  
+        scale_y = scale * self.config.y_channel_weight  # Y通道使用较小的权重
+        
+        # 准备优化参数列表
+        params_to_optimize = []
+        
+        delta_dct_cb = nn.Parameter(torch.randn_like(cb0_dct) * scale)
+        delta_dct_cr = nn.Parameter(torch.randn_like(cr0_dct) * scale)
+        delta_dct_y = nn.Parameter(torch.randn_like(y0_dct) * scale_y)
+        params_to_optimize.extend([delta_dct_cb, delta_dct_cr, delta_dct_y])
+        
+        # Step 4: Create mid-frequency mask
+        mid_freq_mask = create_mid_freq_mask(
+            height=cb0_dct.shape[2],
+            width=cb0_dct.shape[3],
+            freq_ratio_low=self.config.mid_freq_ratio_low,
+            freq_ratio_high=self.config.mid_freq_ratio_high,
+            device=self.device
+        )
+        
+        # Step 5: Compute sequence length and prepare timesteps
+        F = 4
+        seq_len = self.model_wrapper.compute_seq_len(F, H, W)
+        
+        # Random timestep sampling for robustness
+        if self.config.use_random_timestep:
+            timestep = torch.randint(
+                self.config.timestep_min,
+                self.config.timestep_max + 1,
+                (1,),
+                device=self.device
+            )
+            print(f"Using random timestep: {timestep.item()} (range: [{self.config.timestep_min}, {self.config.timestep_max}])")
+        else:
+            # Fallback to middle timestep
+            timestep = torch.tensor([(self.config.timestep_min + self.config.timestep_max) // 2], device=self.device)
+            print(f"Using fixed timestep: {timestep.item()}")
+        
+        t_expanded = timestep.expand(1, seq_len)
+        
+        # Step 6: Encode prompts
+        print(f"Encoding prompts...")
+        context_explosion = self.model_wrapper.encode_prompt(self.explosion_prompt)
+        context_normal = self.model_wrapper.encode_prompt(self.normal_prompt)
+        context_blank = self.model_wrapper.encode_prompt("")
+        
+        # Prepare context arguments
+        arg_context_explosion = {'context': [context_explosion[0]], 'seq_len': seq_len}
+        arg_context_normal = {'context': [context_normal[0]], 'seq_len': seq_len}
+        arg_context_blank = {'context': [context_blank[0]], 'seq_len': seq_len}
+        
+        # Step 7: Generate video latent with noise (for temporal dimension)
+        print("Generating video latent with temporal noise...")
+        F_latent = (F - 1) // self.model_wrapper.vae_stride[0] + 1
+        
+        noise = torch.randn(
+            self.model_wrapper.vae.model.z_dim,
+            F_latent,
+            H // self.model_wrapper.vae_stride[1],
+            W // self.model_wrapper.vae_stride[2],
+            dtype=torch.float32,
+            device=self.device
+        )
+        
+        # Import masks_like utility from Wan
+        from wan.utils.utils import masks_like
+        _, mask2 = masks_like([noise], zero=True)
+        
+        # Cache noise and mask for reuse
+        self._noise = noise
+        self._mask2 = mask2
+        
+        # Step 8: Generate baseline activations (normal prompt)
+        print("Generating baseline activations (original + normal prompt)...")
         with torch.no_grad():
-            baseline_output = self._generate_video(I0_rgb, self.y_nor)  # g(I0, y_nor)
-            original_exp_output = self._generate_video(I0_rgb, self.y_exp)  # g(I0, y_exp)
+            latent_list = self.model_wrapper.vae.encode([I0_preprocessed])
+            latent_0 = latent_list[0]
+            latent_video = (1.0 - mask2[0]) * latent_0 + mask2[0] * noise
+            
+            self.hook_manager.clear_activations()
+            latent_video = latent_video.to(torch.bfloat16)
+            
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                normal_output = self.model_wrapper.wan_model(
+                    [latent_video],
+                    t=t_expanded,
+                    **arg_context_normal
+                )
+            
+            baseline_activations = copy.deepcopy(self.hook_manager.activations)
+            print("Baseline activations generated")
+            
+            # Memory cleanup
+            del latent_list, latent_0, latent_video, normal_output
+            torch.cuda.empty_cache()
         
-        # 3. 迭代优化频域扰动参数
-        pbar = tqdm(range(self.num_steps), desc="频域扰动优化", ncols=100)
+        # Step 9: Generate target activations (black image)
+        print("Generating target activations (black image)...")
+        with torch.no_grad():
+            black_normalized = (torch.zeros_like(I0_rgb) * 2.0 - 1.0).squeeze(0).unsqueeze(1)
+            latent_black_list = self.model_wrapper.vae.encode([black_normalized])
+            latent_black_single = latent_black_list[0]
+            latent_black_video = (1.0 - mask2[0]) * latent_black_single + mask2[0] * noise
+            
+            self.hook_manager.clear_activations()
+            latent_black_video = latent_black_video.to(torch.bfloat16)
+            
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                black_output = self.model_wrapper.wan_model(
+                    [latent_black_video],
+                    t=t_expanded,
+                    **arg_context_blank
+                )
+            
+            target_activations = copy.deepcopy(self.hook_manager.activations)
+            print("Target activations generated")
+            
+            # Memory cleanup
+            del latent_black_list, latent_black_single, latent_black_video
+            del black_output, black_normalized
+            torch.cuda.empty_cache()
         
-        # 记录loss和学习率历史
+        # Step 10: Optimization loop
+        print(f"Starting optimization ({self.config.num_steps} steps)...")
         loss_history = {
             'total': [],
-            'adv': [],
-            'reg': [],
-            'lr': [],
+            'target': [],
+            # 'baseline': [],
+            'constraint': []
         }
+        
+        # Setup optimizer
+        optimizer = torch.optim.Adam(
+            params_to_optimize,
+            lr=self.config.learning_rate,
+            betas=(0.9, 0.999)
+        )
+        
+        # Learning rate scheduler
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=self.config.num_steps,
+            eta_min=self.config.learning_rate * 0.01
+        )
+        
+        # Progress bar
+        pbar = tqdm(range(self.config.num_steps), desc="Optimizing perturbation", ncols=100)
         
         for step in pbar:
             optimizer.zero_grad()
             
-            # 分步计算loss并清理显存
+            # Resample timestep for each optimization step if enabled
+            if self.config.use_random_timestep and self.config.resample_timestep_per_step:
+                timestep = torch.randint(
+                    self.config.timestep_min,
+                    self.config.timestep_max + 1,
+                    (1,),
+                    device=self.device
+                )
+                t_expanded = timestep.expand(1, seq_len)
             
-            # 步骤1: 生成扰动图片并计算对抗损失
-            I0_ycbcr = K_color.rgb_to_ycbcr(I0_rgb)
-            I_perturbed_ycbcr = noise_generator(I0_ycbcr)
-            I_perturbed_rgb = K_color.ycbcr_to_rgb(I_perturbed_ycbcr)
+            # Apply mid-frequency noise in DCT domain
+            cb_dct_perturbed = cb0_dct + delta_dct_cb * mid_freq_mask
+            cr_dct_perturbed = cr0_dct + delta_dct_cr * mid_freq_mask
             
-            # 计算对抗损失：使(加扰图片+爆炸prompt)输出远离(原图+爆炸prompt)
-            perturbed_exp_output = self._generate_video(I_perturbed_rgb, self.y_exp)
-            loss_adv = -F.mse_loss(perturbed_exp_output, original_exp_output)
-            loss_adv_item = loss_adv.item()  # 先记录值
-            loss_adv.backward(retain_graph=False)  # 不保留计算图
+            # IDCT back to spatial domain
+            cb_perturbed = self.dct_op.inverse(cb_dct_perturbed)
+            cr_perturbed = self.dct_op.inverse(cr_dct_perturbed)
             
-            # 清理loss_adv的计算图显存
-            del loss_adv
-            torch.cuda.empty_cache()
+            y_dct_perturbed = y0_dct + delta_dct_y * mid_freq_mask
+            y_perturbed = self.dct_op.inverse(y_dct_perturbed)
             
-            # 步骤2: 重新生成扰动图片并计算正则化损失
-            I0_ycbcr = K_color.rgb_to_ycbcr(I0_rgb)
-            I_perturbed_ycbcr = noise_generator(I0_ycbcr)
-            I_perturbed_rgb = K_color.ycbcr_to_rgb(I_perturbed_ycbcr)
+            # Reconstruct YCbCr and convert to RGB
+            ycbcr_perturbed = torch.cat([y_perturbed, cb_perturbed, cr_perturbed], dim=1)
+            I_perturbed_rgb = K_color.ycbcr_to_rgb(ycbcr_perturbed)
+            I_perturbed_rgb = torch.clamp(I_perturbed_rgb, 0, 1)
             
-            # 计算正则化损失：保证(加扰图片+正常prompt)与(原图+正常prompt)相似
-            perturbed_nor_output = self._generate_video(I_perturbed_rgb, self.y_nor)
-            loss_reg = F.mse_loss(perturbed_nor_output, baseline_output)
-            loss_reg_item = loss_reg.item()  # 记录损失值
-            loss_reg.backward(retain_graph=False)
+            # Convert to Wan format and encode
+            I_perturbed_normalized = (I_perturbed_rgb * 2.0 - 1.0).squeeze(0).unsqueeze(1)
+            latent_perturbed_list = self.model_wrapper.vae.encode([I_perturbed_normalized])
+            latent_perturbed_single = latent_perturbed_list[0]
+            latent_perturbed_video = (1.0 - mask2[0]) * latent_perturbed_single + mask2[0] * noise
             
-            # 清理计算图显存
-            del loss_reg
-            torch.cuda.empty_cache()
+            # Forward pass through Wan model
+            self.hook_manager.clear_activations()
+            latent_perturbed_video = latent_perturbed_video.to(torch.bfloat16)
             
-            # 梯度裁剪防止爆炸（包括所有优化的参数）
-            all_params = list(noise_generator.parameters())
-            torch.nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                output = self.model_wrapper.wan_model(
+                    [latent_perturbed_video],
+                    t=t_expanded,
+                    **arg_context_explosion
+                )
             
+            current_activations = self.hook_manager.activations
+            
+            # Compute losses
+            delta_rgb = I_perturbed_rgb - I0_rgb
+            weights = {
+                'target': self.config.weight_target,
+                # 'baseline': self.config.weight_baseline,
+                # 'constraint': self.config.weight_constraint
+            }
+            
+            losses, log_dict = self.loss_calculator.compute(
+                target_activations,
+                current_activations,
+                baseline_activations,
+                delta_rgb,
+                self.config.epsilon,
+                weights
+            )
+            
+            # Backpropagation
+            losses['total'].backward()
             optimizer.step()
-            
-            # 更新学习率调度器
             lr_scheduler.step()
-            # 记录loss值（使用之前记录的值）
-            total_loss_item = loss_adv_item + self.lambda_reg * loss_reg_item 
-            loss_history['total'].append(total_loss_item)
-            loss_history['adv'].append(loss_adv_item)
-            loss_history['reg'].append(loss_reg_item)
             
-            # 获取当前学习率用于显示和记录
-            current_lr = optimizer.param_groups[0]['lr']
-            loss_history['lr'].append(current_lr)
+            # Record losses
+            for key in ['total', 'target']:
+                loss_history[key].append(log_dict[key])
             
-            # 更新进度条显示（使用记录的值）
+            # Memory cleanup
+            del output, current_activations, latent_perturbed_list
+            del latent_perturbed_single, latent_perturbed_video
+            del I_perturbed_normalized, I_perturbed_rgb, ycbcr_perturbed
+            del cb_dct_perturbed, cr_dct_perturbed, cb_perturbed, cr_perturbed
+            del y_dct_perturbed, y_perturbed
+            del losses, delta_rgb
+            torch.cuda.empty_cache()
+            
+            # Update progress bar
             pbar.set_postfix({
-                'Total': f'{total_loss_item:.4f}',
-                'L_adv': f'{loss_adv_item:.4f}',
-                'L_reg': f'{loss_reg_item:.4f}',
-                'LR': f'{current_lr:.4f}'
+                'Total': f'{log_dict["total"]:.4f}',
+                'Target': f'{log_dict["target"]:.4f}',
+                # 'Base': f'{log_dict["baseline"]:.4f}',
+                # 'Cons': f'{log_dict["constraint"]:.4f}'
             })
         
-        # 4. 生成最终受保护的图片
+        # Step 11: Generate final protected image
+        print("Generating final protected image...")
         with torch.no_grad():
-            final_I_ycbcr = K_color.rgb_to_ycbcr(I0_rgb)
-            final_perturbed_ycbcr = noise_generator(final_I_ycbcr)
-            protected_rgb = K_color.ycbcr_to_rgb(final_perturbed_ycbcr)
+            cb_dct_perturbed = cb0_dct + delta_dct_cb * mid_freq_mask
+            cr_dct_perturbed = cr0_dct + delta_dct_cr * mid_freq_mask
             
-            # 最终硬裁剪到 eps 范围内，确保不可察觉性
+            cb_perturbed = self.dct_op.inverse(cb_dct_perturbed)
+            cr_perturbed = self.dct_op.inverse(cr_dct_perturbed)
+            
+            y_dct_perturbed = y0_dct + delta_dct_y * mid_freq_mask
+            y_perturbed = self.dct_op.inverse(y_dct_perturbed)
+            
+            ycbcr_perturbed = torch.cat([y_perturbed, cb_perturbed, cr_perturbed], dim=1)
+            protected_rgb = K_color.ycbcr_to_rgb(ycbcr_perturbed)
             delta_final = protected_rgb - I0_rgb
-            delta_clipped = torch.clamp(delta_final, -self.eps, self.eps)
+            
+            # Hard clipping to epsilon bounds
+            delta_clipped = torch.clamp(delta_final, -self.config.epsilon, self.config.epsilon)
             protected_image = torch.clamp(I0_rgb + delta_clipped, 0, 1)
             
-            print(f"最终扰动范围: [{delta_clipped.min():.4f}, {delta_clipped.max():.4f}]")
+            print(f"Final perturbation range: [{delta_clipped.min():.4f}, {delta_clipped.max():.4f}]")
         
-        # 绘制loss曲线
+        # Cleanup
+        del self._noise, self._mask2
+        del baseline_activations, target_activations
+        self.hook_manager.clear_activations()
+        torch.cuda.empty_cache()
+        
+        # Plot loss curves
         self._plot_loss_curves(loss_history)
         
         return protected_image.squeeze(0).detach()
     
-    def _generate_video(self, image: torch.Tensor, prompt: str) -> torch.Tensor:
+    def _plot_loss_curves(self, loss_history: Dict[str, List[float]]):
         """
-        使用SVD单步denoising获取视频特征，支持梯度传播
-        优化显存：不使用完整采样，仅进行单步前向传播
-        """
-        import torch.nn.functional as F
-        from einops import rearrange, repeat
-        
-        # 使用更小分辨率减少显存：256x256
-        image_resized = F.interpolate(image, (256, 256), mode="bilinear", align_corners=False)
-        image_resized = image_resized.to(dtype=torch.float32)
-        
-        # 1. 构造batch（减少帧数以节省显存）
-        num_frames = 8  # 从14减少到8帧，大幅减少显存
-        H, W = image_resized.shape[2:]
-        F_downscale = 8
-        C = 4
-        shape = (num_frames, C, H // F_downscale, W // F_downscale)  # [8, 4, 32, 32]
-        
-        # 2. 构造batch
-        batch = {
-            "cond_frames_without_noise": image_resized,
-            "cond_frames": image_resized + 0.02 * torch.randn_like(image_resized),
-            "motion_bucket_id": torch.tensor([127], device=self.device),
-            "fps_id": torch.tensor([6], device=self.device),
-            "cond_aug": torch.tensor([0.02], device=self.device),
-            "num_video_frames": num_frames,
-        }
-        
-        batch_uc = {k: (torch.clone(v) if isinstance(v, torch.Tensor) else v) 
-                    for k, v in batch.items()}
-        
-        # 3. 获取条件嵌入
-        c, uc = self.svd_pipe.conditioner.get_unconditional_conditioning(
-            batch, batch_uc=batch_uc,
-            force_uc_zero_embeddings=["cond_frames", "cond_frames_without_noise"],
-        )
-        
-        # 4. 扩展到时间维度
-        for k in ["crossattn", "concat"]:
-            if k in c:
-                uc[k] = repeat(uc[k], "b ... -> b t ...", t=num_frames)
-                uc[k] = rearrange(uc[k], "b t ... -> (b t) ...", t=num_frames)
-                c[k] = repeat(c[k], "b ... -> b t ...", t=num_frames)
-                c[k] = rearrange(c[k], "b t ... -> (b t) ...", t=num_frames)
-        
-        if "vector" in c:
-            uc["vector"] = repeat(uc["vector"], "b d -> (b t) d", t=num_frames)
-            c["vector"] = repeat(c["vector"], "b d -> (b t) d", t=num_frames)
-        
-        # 5. 使用单步denoising而非完整采样（节省显存）
-        # 临时更新guider的num_frames以匹配当前帧数
-        original_num_frames = self.svd_pipe.sampler.guider.num_frames
-        original_scale = self.svd_pipe.sampler.guider.scale
-        self.svd_pipe.sampler.guider.num_frames = num_frames
-        self.svd_pipe.sampler.guider.scale = torch.linspace(
-            self.svd_pipe.sampler.guider.min_scale,
-            self.svd_pipe.sampler.guider.max_scale,
-            num_frames
-        ).unsqueeze(0)
-        
-        # 生成噪声latent
-        randn = torch.randn(shape, device=self.device)
-        
-        # 获取中等噪声级别的sigma
-        sigmas = self.svd_pipe.sampler.discretization(
-            self.svd_num_steps, device=self.device
-        )
-        sigma = sigmas[len(sigmas) // 2]  # 使用中间时刻
-        
-        # 添加噪声
-        noisy_latent = randn * torch.sqrt(1.0 + sigma ** 2.0)
-        
-        # 单步denoising获取特征
-        additional_model_inputs = {
-            "image_only_indicator": torch.zeros(2, num_frames, device=self.device),
-            "num_video_frames": num_frames
-        }
-        
-        # 准备sigma - 需要创建与batch匹配的tensor
-        s_in = noisy_latent.new_ones([noisy_latent.shape[0]])  # [num_frames]
-        
-        # 使用guider准备输入（包含CFG）
-        x_in, sigma_in, c_in = self.svd_pipe.sampler.guider.prepare_inputs(
-            noisy_latent, s_in * sigma, c, uc
-        )
-        
-        # 单步前向传播获取denoised特征
-        denoised = self.svd_pipe.denoiser(
-            self.svd_pipe.model, x_in, sigma_in, c_in, **additional_model_inputs
-        )
-        
-        # 应用guider得到最终特征
-        output = self.svd_pipe.sampler.guider(denoised, sigma_in)
-        
-        # 恢复原始guider配置
-        self.svd_pipe.sampler.guider.num_frames = original_num_frames
-        self.svd_pipe.sampler.guider.scale = original_scale
-        
-        return output
-    
-
-    def _plot_loss_curves(self, loss_history: dict):
-        """
-        Plot and save loss curves
+        Plot and save loss curves for analysis.
         
         Args:
-            loss_history: Dictionary containing the history of each loss
+            loss_history: Dictionary containing loss values for each iteration
         """
-        plt.figure(figsize=(24, 12))
+        plt.figure(figsize=(18, 6))
         
         # Subplot 1: Total Loss
-        plt.subplot(2, 5, 1)
+        plt.subplot(1, 4, 1)
         plt.plot(loss_history['total'], linewidth=2, color='#2E86AB')
         plt.xlabel('Iteration', fontsize=12)
         plt.ylabel('Total Loss', fontsize=12)
         plt.title('Total Loss', fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         
-        # Subplot 2: Adversarial Loss
-        plt.subplot(2, 5, 2)
-        plt.plot(loss_history['adv'], linewidth=2, color='#A23B72')
+        # Subplot 2: Target Loss
+        plt.subplot(1, 4, 2)
+        plt.plot(loss_history['target'], linewidth=2, color='#A23B72')
         plt.xlabel('Iteration', fontsize=12)
-        plt.ylabel('Adversarial Loss', fontsize=12)
-        plt.title('L_adv: Adversarial Loss', fontsize=14, fontweight='bold')
+        plt.ylabel('Target Loss', fontsize=12)
+        plt.title('Target Loss (Black Image)', fontsize=14, fontweight='bold')
         plt.grid(True, alpha=0.3)
         
-        # Subplot 3: Regularization Loss
-        plt.subplot(2, 5, 3)
-        plt.plot(loss_history['reg'], linewidth=2, color='#F18F01')
-        plt.xlabel('Iteration', fontsize=12)
-        plt.ylabel('Regularization Loss', fontsize=12)
-        plt.title('L_reg: Regularization Loss', fontsize=14, fontweight='bold')
-        plt.grid(True, alpha=0.3)
+        # Subplot 3: Baseline Divergence Loss
+        # plt.subplot(1, 4, 3)
+        # plt.plot(loss_history['baseline'], linewidth=2, color='#6C5CE7')
+        # plt.xlabel('Iteration', fontsize=12)
+        # plt.ylabel('Baseline Loss', fontsize=12)
+        # plt.title('Baseline Divergence Loss', fontsize=14, fontweight='bold')
+        # plt.grid(True, alpha=0.3)
         
-        # Subplot 4: Learning Rate
-        plt.subplot(2, 5, 4)
-        plt.plot(loss_history['lr'], linewidth=2, color='#4CAF50')
-        plt.xlabel('Iteration', fontsize=12)
-        plt.ylabel('Learning Rate', fontsize=12)
-        plt.title('Learning Rate (cosine)', fontsize=14, fontweight='bold')
-        plt.grid(True, alpha=0.3)
-        plt.yscale('log')  # 使用对数坐标轴更好地显示学习率变化   
+        # Subplot 4: Constraint Loss
+        # plt.subplot(1, 4, 4)
+        # plt.plot(loss_history['constraint'], linewidth=2, color='#E74C3C')
+        # plt.xlabel('Iteration', fontsize=12)
+        # plt.ylabel('Constraint Loss', fontsize=12)
+        # plt.title('Constraint Loss', fontsize=14, fontweight='bold')
+        # plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
         
         # Save to current working directory
-        save_path = os.path.join(os.getcwd(), 'loss_curves.png')
+        save_path = os.path.join(os.path.dirname(__file__), 'loss_curves.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         
         print(f"\nLoss curves saved to: {save_path}")
         
         # Print final statistics
-        print(f"\n=== Loss & Learning Rate Statistics ===")
-        print(f"Total Loss:     Initial={loss_history['total'][0]:.4f}, Final={loss_history['total'][-1]:.4f}")
-        print(f"L_adv:          Initial={loss_history['adv'][0]:.4f}, Final={loss_history['adv'][-1]:.4f}")
-        print(f"L_reg:          Initial={loss_history['reg'][0]:.4f}, Final={loss_history['reg'][-1]:.4f}")
-        print(f"Learning Rate:  Initial={loss_history['lr'][0]:.6f}, Final={loss_history['lr'][-1]:.6f}")
-        print(f"LR Scheduler:   cosine annealing")
-        
+        print("\n=== Loss Statistics ===")
+        print(f"Total Loss:      Initial={loss_history['total'][0]:.4f}, Final={loss_history['total'][-1]:.4f}")
+        print(f"Target Loss:     Initial={loss_history['target'][0]:.4f}, Final={loss_history['target'][-1]:.4f}")
+        # print(f"Baseline Loss:   Initial={loss_history['baseline'][0]:.4f}, Final={loss_history['baseline'][-1]:.4f}")
+        # print(f"Constraint Loss: Initial={loss_history['constraint'][0]:.4f}, Final={loss_history['constraint'][-1]:.4f}")
+
