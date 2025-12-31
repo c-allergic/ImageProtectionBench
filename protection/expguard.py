@@ -21,7 +21,8 @@ from matplotlib import pyplot as plt
 import os
 import copy
 import logging
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
 from typing import Optional, Dict, List
 from PIL import Image
 
@@ -53,20 +54,29 @@ class AttackConfig:
         use_random_timestep: Whether to use random timestep sampling
         resample_timestep_per_step: Whether to resample timestep at each optimization step
         y_channel_weight: Weight for Y channel perturbation (relative to CbCr)
+        delta_init_scale: Initial scale for delta initialization
+        use_grid_search: Whether to use grid search for finding optimal delta_init_scale
+        grid_search_scales: List of scales to try in grid search
+        grid_search_steps: Number of steps to run for each scale in grid search
     """
-    num_steps: int = 50
+    num_steps: int = 100
     learning_rate: float = 1e-2
-    epsilon: float = 16.0 / 255.0
+    epsilon: float = 32.0 / 255.0
     mid_freq_ratio_low: float = 0.1
     mid_freq_ratio_high: float = 0.5
-    weight_target: float = 1.0
+    weight_target: float = 0
     weight_baseline: float = 1.0
-    weight_constraint: float = 10.0
+    weight_constraint: float = 1.0
     timestep_min: int = 200
     timestep_max: int = 800
-    use_random_timestep: bool = True
+    use_random_timestep: bool = False
     resample_timestep_per_step: bool = False
     y_channel_weight: float = 0.3
+    delta_init_scale: float = 3.0
+    use_grid_search: bool = False
+    # grid_search_scales: tuple = (1.0, 3.0, 5.0, 7.0, 10.0)
+    # grid_search_y_weights: tuple = (0.1, 0.3, 0.5, 0.7, 1.0)
+    # grid_search_steps: int = 10
 
 
 class ExpGuard(ProtectionBase):
@@ -94,18 +104,6 @@ class ExpGuard(ProtectionBase):
     2. WanModelWrapper: Manages model loading and preprocessing
     3. AttackLoss: Computes optimization objectives
     4. AttentionHook: Captures intermediate activations
-    
-    Example:
-        >>> config = AttackConfig(
-        ...     num_steps=100,
-        ...     epsilon=20/255,
-        ...     use_random_timestep=True,
-        ...     timestep_min=200,
-        ...     timestep_max=800,
-        ...     y_channel_weight=0.3
-        ... )
-        >>> expguard = ExpGuard(device='cuda', config=config)
-        >>> protected = expguard.protect(pil_image)
     
     Attributes:
         device: Device for computation ('cuda' or 'cpu')
@@ -197,6 +195,8 @@ class ExpGuard(ProtectionBase):
     def protect_multiple(
         self,
         images: List[Image.Image],
+        save_config: bool = True,
+        results_dir: Optional[str] = None,
         **kwargs
     ) -> torch.Tensor:
         """
@@ -204,6 +204,8 @@ class ExpGuard(ProtectionBase):
         
         Args:
             images: List of PIL Image objects
+            save_config: 是否保存配置到JSON文件（默认True，只在第一张图片时保存）
+            results_dir: results目录路径，如果为None则使用当前目录下的results文件夹
             **kwargs: Additional arguments passed to protect()
             
         Returns:
@@ -219,8 +221,10 @@ class ExpGuard(ProtectionBase):
             raise ValueError("All elements must be PIL Image objects")
         
         protected_images = []
-        for img_pil in images:
-            protected_single = self.protect(img_pil, **kwargs)
+        for i, img_pil in enumerate(images):
+            # 只在第一张图片时保存配置
+            should_save = save_config and (i == 0)
+            protected_single = self.protect(img_pil, save_config=should_save, results_dir=results_dir, **kwargs)
             protected_images.append(protected_single)
             
             # Memory cleanup after each image
@@ -228,8 +232,214 @@ class ExpGuard(ProtectionBase):
         
         return torch.stack(protected_images)
     
+    def _grid_search_best_params(
+        self,
+        I0_rgb: torch.Tensor,
+        y0_dct: torch.Tensor,
+        cb0_dct: torch.Tensor,
+        cr0_dct: torch.Tensor,
+        mid_freq_mask: torch.Tensor,
+        target_activations: Dict,
+        baseline_activations: Dict,
+        t_expanded: torch.Tensor,
+        arg_context_explosion: Dict,
+        noise: torch.Tensor,
+        mask2: torch.Tensor
+    ) -> tuple:
+        """
+        使用grid search寻找最优的delta初始化scale和y_channel_weight
+        
+        Args:
+            I0_rgb: 原始RGB图像
+            y0_dct, cb0_dct, cr0_dct: 原始YCbCr的DCT系数
+            mid_freq_mask: 中频掩码
+            target_activations: 目标激活
+            baseline_activations: 基线激活
+            t_expanded: 时间步
+            arg_context_explosion: 爆炸prompt的context
+            noise: 视频噪声
+            mask2: 视频掩码
+            
+        Returns:
+            (best_scale, best_y_weight): 最优的初始化scale和y_channel_weight
+        """
+        print("\n" + "="*70)
+        print("开始Grid Search寻找最优初始化参数 (scale & y_channel_weight)")
+        print("="*70)
+        
+        best_scale = self.config.delta_init_scale
+        best_y_weight = self.config.y_channel_weight
+        best_final_loss = float('inf')
+        results = []
+        
+        # 遍历所有参数组合
+        for scale in self.config.grid_search_scales:
+            for y_weight in self.config.grid_search_y_weights:
+                print(f"\n测试 scale = {scale}, y_weight = {y_weight}")
+                
+                # 初始化delta
+                scale_y = scale * y_weight
+                delta_dct_cb = nn.Parameter(torch.randn_like(cb0_dct) * scale)
+                delta_dct_cr = nn.Parameter(torch.randn_like(cr0_dct) * scale)
+                delta_dct_y = nn.Parameter(torch.randn_like(y0_dct) * scale_y)
+                
+                params = [delta_dct_cb, delta_dct_cr, delta_dct_y]
+                optimizer = torch.optim.Adam(params, lr=self.config.learning_rate)
+                
+                loss_values = []
+                
+                # 运行少量步数进行评估
+                for step in range(self.config.grid_search_steps):
+                    optimizer.zero_grad()
+                    
+                    # 应用扰动
+                    cb_dct_perturbed = cb0_dct + delta_dct_cb * mid_freq_mask
+                    cr_dct_perturbed = cr0_dct + delta_dct_cr * mid_freq_mask
+                    y_dct_perturbed = y0_dct + delta_dct_y * mid_freq_mask
+                    
+                    cb_perturbed = self.dct_op.inverse(cb_dct_perturbed)
+                    cr_perturbed = self.dct_op.inverse(cr_dct_perturbed)
+                    y_perturbed = self.dct_op.inverse(y_dct_perturbed)
+                    
+                    ycbcr_perturbed = torch.cat([y_perturbed, cb_perturbed, cr_perturbed], dim=1)
+                    I_perturbed_rgb = K_color.ycbcr_to_rgb(ycbcr_perturbed)
+                    I_perturbed_rgb = torch.clamp(I_perturbed_rgb, 0, 1)
+                    
+                    # 编码并前向传播
+                    I_perturbed_normalized = (I_perturbed_rgb * 2.0 - 1.0).squeeze(0).unsqueeze(1)
+                    latent_perturbed_list = self.model_wrapper.vae.encode([I_perturbed_normalized])
+                    latent_perturbed_single = latent_perturbed_list[0]
+                    latent_perturbed_video = (1.0 - mask2[0]) * latent_perturbed_single + mask2[0] * noise
+                    
+                    self.hook_manager.clear_activations()
+                    latent_perturbed_video = latent_perturbed_video.to(torch.bfloat16)
+                    
+                    with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        output = self.model_wrapper.wan_model(
+                            [latent_perturbed_video],
+                            t=t_expanded,
+                            **arg_context_explosion
+                        )
+                    
+                    current_activations = self.hook_manager.activations
+                    
+                    # 计算loss
+                    delta_rgb = I_perturbed_rgb - I0_rgb
+                    weights = {
+                        'target': self.config.weight_target,
+                        'baseline': self.config.weight_baseline,
+                        'constraint': self.config.weight_constraint
+                    }
+                    
+                    losses, log_dict = self.loss_calculator.compute(
+                        target_activations,
+                        current_activations,
+                        baseline_activations,
+                        delta_rgb,
+                        self.config.epsilon,
+                        weights
+                    )
+                    
+                    losses['total'].backward()
+                    optimizer.step()
+                    
+                    loss_values.append(log_dict['total'])
+                    
+                    # 立即清理所有中间变量
+                    del cb_dct_perturbed, cr_dct_perturbed, y_dct_perturbed
+                    del cb_perturbed, cr_perturbed, y_perturbed
+                    del ycbcr_perturbed, I_perturbed_rgb, I_perturbed_normalized
+                    del latent_perturbed_list, latent_perturbed_single, latent_perturbed_video
+                    del output, delta_rgb, losses
+                    
+                    # 清理activations（重要！）
+                    del current_activations
+                    self.hook_manager.clear_activations()
+                    
+                    # 每步都清理缓存
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                
+                # 记录结果
+                initial_loss = loss_values[0]
+                final_loss = loss_values[-1]
+                improvement = initial_loss - final_loss
+                
+                results.append({
+                    'scale': scale,
+                    'y_weight': y_weight,
+                    'initial_loss': initial_loss,
+                    'final_loss': final_loss,
+                    'improvement': improvement
+                })
+                
+                print(f"  初始loss: {initial_loss:.4f}")
+                print(f"  最终loss: {final_loss:.4f}")
+                print(f"  改善程度: {improvement:.4f}")
+                
+                if final_loss < best_final_loss:
+                    best_final_loss = final_loss
+                    best_scale = scale
+                    best_y_weight = y_weight
+                
+                # 清理参数和优化器
+                del delta_dct_cb, delta_dct_cr, delta_dct_y, params, optimizer, loss_values
+                
+                # 强制清理GPU缓存
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+        
+        # 打印总结
+        print("\n" + "="*80)
+        print("Grid Search 结果总结")
+        print("="*80)
+        print(f"{'Scale':<10} {'Y_Weight':<12} {'初始Loss':<15} {'最终Loss':<15} {'改善程度':<15}")
+        print("-"*80)
+        for r in results:
+            marker = " ← 最优" if (r['scale'] == best_scale and r['y_weight'] == best_y_weight) else ""
+            print(f"{r['scale']:<10.1f} {r['y_weight']:<12.2f} {r['initial_loss']:<15.4f} {r['final_loss']:<15.4f} {r['improvement']:<15.4f}{marker}")
+        print("="*80)
+        print(f"选择最优参数: scale = {best_scale}, y_channel_weight = {best_y_weight}")
+        print("="*80 + "\n")
+        
+        # Grid search完成后彻底清理内存
+        del results
+        self.hook_manager.clear_activations()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        print("Grid search内存清理完成\n")
+        
+        return best_scale, best_y_weight
+    
+    def _save_config(self, output_dir: Optional[str] = None):
+        """
+        保存配置参数到JSON文件
+        
+        Args:
+            output_dir: 输出目录路径，如果为None则使用当前目录下的results文件夹
+        """
+        if output_dir is None:
+            # 默认使用当前目录下的results文件夹
+            output_dir = os.path.join(os.getcwd(), 'results')
+        
+        # 确保目录存在
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 将dataclass转换为字典
+        config_dict = asdict(self.config)
+        
+        # 保存到JSON文件
+        config_file = os.path.join(output_dir, 'expguard_config.json')
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+        
+        print(f"配置已保存到: {config_file}")
+    
     @torch.enable_grad()
-    def protect(self, image: Image.Image) -> torch.Tensor:
+    def protect(self, image: Image.Image, save_config: bool = True, results_dir: Optional[str] = None) -> torch.Tensor:
         """
         Protect a single image using target-based attention attack.
         
@@ -242,12 +452,18 @@ class ExpGuard(ProtectionBase):
         
         Args:
             image: PIL Image object (will be preprocessed internally)
+            save_config: 是否保存配置到JSON文件（默认True）
+            results_dir: results目录路径，如果为None则使用当前目录下的results文件夹
             
         Returns:
             protected_image: [C, H, W] tensor in range [0, 1]
         """
         if not isinstance(image, Image.Image):
             raise ValueError(f"ExpGuard.protect() expects PIL Image, got {type(image)}")
+        
+        # 保存配置参数
+        if save_config:
+            self._save_config(results_dir)
         
         print("Preprocessing image...")
         I0_preprocessed = self.model_wrapper.preprocess_image(image)
@@ -272,16 +488,9 @@ class ExpGuard(ProtectionBase):
         cr0_dct = self.dct_op.forward(cr0)
         
         # Step 3: Initialize learnable DCT-domain noise
-        scale = 5.0  
+        # 使用配置中的scale，如果启用grid search则会被覆盖
+        scale = self.config.delta_init_scale
         scale_y = scale * self.config.y_channel_weight  # Y通道使用较小的权重
-        
-        # 准备优化参数列表
-        params_to_optimize = []
-        
-        delta_dct_cb = nn.Parameter(torch.randn_like(cb0_dct) * scale)
-        delta_dct_cr = nn.Parameter(torch.randn_like(cr0_dct) * scale)
-        delta_dct_y = nn.Parameter(torch.randn_like(y0_dct) * scale_y)
-        params_to_optimize.extend([delta_dct_cb, delta_dct_cr, delta_dct_y])
         
         # Step 4: Create mid-frequency mask
         mid_freq_mask = create_mid_freq_mask(
@@ -394,12 +603,31 @@ class ExpGuard(ProtectionBase):
             del black_output, black_normalized
             torch.cuda.empty_cache()
         
+        # Step 9.5: Grid search for optimal parameters (if enabled)
+        if self.config.use_grid_search:
+            scale, y_channel_weight = self._grid_search_best_params(
+                I0_rgb, y0_dct, cb0_dct, cr0_dct, mid_freq_mask,
+                target_activations, baseline_activations,
+                t_expanded, arg_context_explosion, noise, mask2
+            )
+            scale_y = scale * y_channel_weight
+        else:
+            y_channel_weight = self.config.y_channel_weight
+        
+        # 准备优化参数列表
+        params_to_optimize = []
+        
+        delta_dct_cb = nn.Parameter(torch.randn_like(cb0_dct) * scale)
+        delta_dct_cr = nn.Parameter(torch.randn_like(cr0_dct) * scale)
+        delta_dct_y = nn.Parameter(torch.randn_like(y0_dct) * scale_y)
+        params_to_optimize.extend([delta_dct_cb, delta_dct_cr, delta_dct_y])
+        
         # Step 10: Optimization loop
         print(f"Starting optimization ({self.config.num_steps} steps)...")
         loss_history = {
             'total': [],
             'target': [],
-            # 'baseline': [],
+            'baseline': [],
             'constraint': []
         }
         
@@ -472,8 +700,8 @@ class ExpGuard(ProtectionBase):
             delta_rgb = I_perturbed_rgb - I0_rgb
             weights = {
                 'target': self.config.weight_target,
-                # 'baseline': self.config.weight_baseline,
-                # 'constraint': self.config.weight_constraint
+                'baseline': self.config.weight_baseline,
+                'constraint': self.config.weight_constraint
             }
             
             losses, log_dict = self.loss_calculator.compute(
@@ -491,7 +719,7 @@ class ExpGuard(ProtectionBase):
             lr_scheduler.step()
             
             # Record losses
-            for key in ['total', 'target']:
+            for key in ['total', 'target', 'baseline', 'constraint']:
                 loss_history[key].append(log_dict[key])
             
             # Memory cleanup
@@ -507,8 +735,8 @@ class ExpGuard(ProtectionBase):
             pbar.set_postfix({
                 'Total': f'{log_dict["total"]:.4f}',
                 'Target': f'{log_dict["target"]:.4f}',
-                # 'Base': f'{log_dict["baseline"]:.4f}',
-                # 'Cons': f'{log_dict["constraint"]:.4f}'
+                'Base': f'{log_dict["baseline"]:.4f}',
+                'Cons': f'{log_dict["constraint"]:.4f}'
             })
         
         # Step 11: Generate final protected image
@@ -570,25 +798,25 @@ class ExpGuard(ProtectionBase):
         plt.grid(True, alpha=0.3)
         
         # Subplot 3: Baseline Divergence Loss
-        # plt.subplot(1, 4, 3)
-        # plt.plot(loss_history['baseline'], linewidth=2, color='#6C5CE7')
-        # plt.xlabel('Iteration', fontsize=12)
-        # plt.ylabel('Baseline Loss', fontsize=12)
-        # plt.title('Baseline Divergence Loss', fontsize=14, fontweight='bold')
-        # plt.grid(True, alpha=0.3)
+        plt.subplot(1, 4, 3)
+        plt.plot(loss_history['baseline'], linewidth=2, color='#6C5CE7')
+        plt.xlabel('Iteration', fontsize=12)
+        plt.ylabel('Baseline Loss', fontsize=12)
+        plt.title('Baseline Divergence Loss', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
         
         # Subplot 4: Constraint Loss
-        # plt.subplot(1, 4, 4)
-        # plt.plot(loss_history['constraint'], linewidth=2, color='#E74C3C')
-        # plt.xlabel('Iteration', fontsize=12)
-        # plt.ylabel('Constraint Loss', fontsize=12)
-        # plt.title('Constraint Loss', fontsize=14, fontweight='bold')
-        # plt.grid(True, alpha=0.3)
+        plt.subplot(1, 4, 4)
+        plt.plot(loss_history['constraint'], linewidth=2, color='#E74C3C')
+        plt.xlabel('Iteration', fontsize=12)
+        plt.ylabel('Constraint Loss', fontsize=12)
+        plt.title('Constraint Loss', fontsize=14, fontweight='bold')
+        plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
         
         # Save to current working directory
-        save_path = os.path.join(os.path.dirname(__file__), 'loss_curves.png')
+        save_path = os.path.join(os.path.dirname(__file__), 'baseline_only_loss_curves.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
         
@@ -598,6 +826,6 @@ class ExpGuard(ProtectionBase):
         print("\n=== Loss Statistics ===")
         print(f"Total Loss:      Initial={loss_history['total'][0]:.4f}, Final={loss_history['total'][-1]:.4f}")
         print(f"Target Loss:     Initial={loss_history['target'][0]:.4f}, Final={loss_history['target'][-1]:.4f}")
-        # print(f"Baseline Loss:   Initial={loss_history['baseline'][0]:.4f}, Final={loss_history['baseline'][-1]:.4f}")
-        # print(f"Constraint Loss: Initial={loss_history['constraint'][0]:.4f}, Final={loss_history['constraint'][-1]:.4f}")
+        print(f"Baseline Loss:   Initial={loss_history['baseline'][0]:.4f}, Final={loss_history['baseline'][-1]:.4f}")
+        print(f"Constraint Loss: Initial={loss_history['constraint'][0]:.4f}, Final={loss_history['constraint'][-1]:.4f}")
 

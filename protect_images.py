@@ -6,7 +6,7 @@
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 import argparse
 import datetime
 import json
@@ -68,7 +68,7 @@ def initialize_attack_method(attack_type: str, device: str):
     return attack_method
 
 
-def protect_images_batch(images, protection_method, batch_size=5, attack_method=None):
+def protect_images_batch(images, protection_method, batch_size=5, attack_method=None, results_dir=None):
     """批量保护图片，参照experiment.py的批次处理逻辑"""
     total_images = len(images)
     attack_info = f"，攻击方法: {attack_method.__class__.__name__}" if attack_method else "，无攻击"
@@ -94,7 +94,10 @@ def protect_images_batch(images, protection_method, batch_size=5, attack_method=
             
             # 应用保护
             start_time = time.time()
-            protected_tensors = protection_method.protect_multiple(original_images)
+            protected_tensors = protection_method.protect_multiple(
+                original_images, 
+                results_dir=results_dir
+            )
         else:
             # 其他保护方法使用transform转换为tensor
             original_tensors = []
@@ -268,7 +271,8 @@ def main():
         data, 
         protection_method, 
         batch_size=args.batch_size,
-        attack_method=attack_method
+        attack_method=attack_method,
+        results_dir=output_dirs['results']  # 传递results目录路径
     )
     
     # 保存保护后的图片
